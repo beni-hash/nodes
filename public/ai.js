@@ -170,8 +170,7 @@ export function chooseTurn(s, level = 'hard') {
   return best.seq;
 }
 
-export function pickHeroes() {
-  const pool = HERO_IDS;
+export function pickHeroes(pool = HERO_IDS) {
   const out = [];
   while (out.length < 3) { const h = pool[Math.floor(Math.random() * pool.length)]; if (!out.includes(h) || (Math.random() < 0.15 && out.filter(x => x === h).length < 2)) out.push(h); }
   return out;

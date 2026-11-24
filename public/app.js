@@ -50,11 +50,11 @@ const G = {
   screen: 'start', mode: null, me: 0, log: [], state: null,
   sel: null, pending: null, picks: [], msg: '', err: false,
   net: null, code: '', peers: 0, aiBusy: false, menu: false, ruleBack: 'start', fx: null,
-  bigFx: true, clockMin: 0, mark: 0, timeoutSent: -1, level: 'medium', adv: false, aura: null,
+  bigFx: true, clockMin: 0, mark: 0, timeoutSent: -1, level: 'medium', tier: 1, aura: null,
   name: '', mn: 3, rounds: 30, myId: '', host: false, onlineIds: null, onlineSeats: new Set(), sitAt: 0, botPick: {}, botTimer: null, botPlan: null, botLastSeq: -1,
 };
-try { const v = JSON.parse(localStorage.getItem('nodes-settings') || '{}'); if (typeof v.bigFx === 'boolean') G.bigFx = v.bigFx; if (Number.isInteger(v.clockMin)) G.clockMin = v.clockMin; if (v.level in { easy: 1, medium: 1, hard: 1 }) G.level = v.level; if (typeof v.adv === 'boolean') G.adv = v.adv; if (typeof v.name === 'string') G.name = v.name.slice(0, 14); if (v.mn === 3 || v.mn === 4) G.mn = v.mn; if (v.rounds >= 10 && v.rounds <= 50) G.rounds = v.rounds; } catch {}
-const saveSettings = () => { try { localStorage.setItem('nodes-settings', JSON.stringify({ bigFx: G.bigFx, clockMin: G.clockMin, level: G.level, adv: G.adv, name: G.name, mn: G.mn, rounds: G.rounds })); } catch {} };
+try { const v = JSON.parse(localStorage.getItem('nodes-settings') || '{}'); if (typeof v.bigFx === 'boolean') G.bigFx = v.bigFx; if (Number.isInteger(v.clockMin)) G.clockMin = v.clockMin; if (v.level in { easy: 1, medium: 1, hard: 1 }) G.level = v.level; if ([1, 2, 3].includes(v.tier)) G.tier = v.tier; else if (typeof v.adv === 'boolean') G.tier = v.adv ? 3 : 2; if (typeof v.name === 'string') G.name = v.name.slice(0, 14); if (v.mn === 3 || v.mn === 4) G.mn = v.mn; if (v.rounds >= 10 && v.rounds <= 50) G.rounds = v.rounds; } catch {}
+const saveSettings = () => { try { localStorage.setItem('nodes-settings', JSON.stringify({ bigFx: G.bigFx, clockMin: G.clockMin, level: G.level, tier: G.tier, name: G.name, mn: G.mn, rounds: G.rounds })); } catch {} };
 const reduced = () => window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 // Neuer Spielstand; gibt die Dauer der Effekte zurück
 function setState(next, animate = true) {
@@ -123,7 +123,10 @@ function emblem(size) {
   return o + '</svg>';
 }
 
-const advToggle = () => `<div class="clockset"><label class="switch"><input type="checkbox" id="advbox" ${G.adv ? 'checked' : ''}> <span><b>Aura</b></span></label>${G.adv ? '<div class="muted" style="font-size:13px">Jeder wählt zusätzlich eine Aura mit Dauerbonus.</div>' : ''}</div>`;
+const TIER_TXT = { 1: '5 Helden: Titan, Sniper, Interceptor, Phantom, Hacker. Ideal zum Lernen.', 2: 'Alle 10 Helden.', 3: 'Alle 10 Helden, dazu wählt jeder eine Aura mit Dauerbonus.' };
+const advToggle = () => `<div class="clockset"><span style="font-size:15px"><b>Spielstufe</b></span><div class="seg" role="radiogroup" aria-label="Spielstufe">${[1, 2, 3].map(t => `<button class="segbtn ${G.tier === t ? 'on' : ''}" role="radio" aria-checked="${G.tier === t}" data-act="tier" data-t="${t}">${E.TIERS[t]}</button>`).join('')}</div><div class="muted" style="font-size:13px">${TIER_TXT[G.tier]}</div></div>`;
+const tierNow = () => (G.mode === 'single' ? G.tier : E.tierOf(G.state));
+const poolNow = () => (tierNow() === 1 ? E.BASIC_HEROES : E.HERO_IDS);
 const clockLabel = m => (m ? `${m} Min.` : 'Aus');
 const roundPicker = () => `<div class="clockset"><label for="roundrange"><b>Runden</b> <span class="muted" id="roundlbl">${G.rounds}</span></label>
   <input id="roundrange" type="range" min="${E.ROUND_MIN}" max="${E.ROUND_MAX}" step="5" value="${G.rounds}"></div>`;
@@ -198,7 +201,10 @@ function rulesScreen() {
 
   <h3>3 · Vorbereitung: Helden wählen</h3>
   <p>Vor der Partie wählt jeder Spieler geheim <b>3 Helden aus 10</b>. Derselbe Held darf <b>höchstens zweimal</b> in deinem Team sein, und beide Spieler dürfen dieselben Helden wählen. Jede Wahl ist ein Heldenplatz: Du kannst also höchstens 3 Helden gleichzeitig auf dem Feld haben.</p>
-  <p>Im <b>Fortgeschrittenen-Modus</b> wählt jeder zusätzlich eine <b>Aura</b> (siehe Kapitel 11).</p>
+  <p>Vor der Partie wählst du die <b>Spielstufe</b>:</p>
+  <ul><li><b>Grundspiel:</b> nur die ersten 5 Helden (Titan, Sniper, Interceptor, Phantom, Hacker). Ideal zum Lernen.</li>
+  <li><b>Erweitert:</b> alle 10 Helden.</li>
+  <li><b>Profi:</b> alle 10 Helden, und jeder wählt zusätzlich eine <b>Aura</b> (siehe Kapitel 12).</li></ul>
 
   <h3>4 · Ablauf einer Runde</h3>
   <p>Die Spieler sind abwechselnd am Zug. Im Singleplayer entscheidet das Los, wer beginnt. Im Duell beginnt, wer den Raum erstellt hat. In deinem Zug hast du <b>2 Aktionen</b> (die zwei Punkte oben in der Mitte). <b>Ausgleich:</b> Wer nicht beginnt, startet mit <b>16 statt 15 Nodes</b> im Pot. Du darfst sie beliebig kombinieren, auch zweimal dieselbe Aktion. Sind beide Aktionen verbraucht, endet dein Zug automatisch. Du kannst ihn auch früher mit «Zug beenden» abschliessen.</p>
@@ -218,6 +224,7 @@ function rulesScreen() {
 
   <h3>7 · Einkreisen</h3>
   <p>Deine <b>Nodes, Pylone, Energiewände und Drohnen</b> bilden zusammen Ketten. Helden gehören nicht zur Kette. Am Ende jedes Zuges wird geprüft, ob eine Kette zusammen mit dem Spielfeldrand ein Gebiet vom Rest des Feldes abschneidet.</p>
+  <p><b>Vorschau:</b> Gebiete, die am Zugende eingekreist werden, sind auf dem Feld schwach in der Farbe des Einkreisenden eingefärbt. Unter dem Feld steht, wie viele Figuren betroffen sind. So siehst du vor dem Zugende, was passieren wird, und kannst noch reagieren.</p>
   <p><b>Es zählen nur die gezeichneten Linien.</b> Ein Gebiet ist abgeschlossen, wenn jede Linie, die aus dem Gebiet hinausführt, auf eine Figur deiner Kette trifft. Wo zwischen zwei Punkten keine Linie gezeichnet ist, gibt es auch keinen Weg hinaus. Die Kette selbst muss nicht zusammenhängen, und freie Punkte im Gebiet retten nichts.</p>
   <p>Ein abgeschlossenes Gebiet ist <b>eingekreist</b>, wenn es <b>höchstens ${E.ENC_MAX} Punkte</b> umfasst. Gezählt werden die Figuren darin und die freien Punkte zusammen. Grössere Gebiete gelten nicht als eingekreist, auch wenn sie abgeschnitten sind.</p>
   <div class="box"><b>Genau gesagt:</b> Das Spielfeld ist ein Graph aus Punkten und Linien. K sind die Punkte mit deinen Kettenfiguren (im 2 gegen 2 auch die deines Partners). Entfernt man K, zerfällt der Rest in zusammenhängende Gebiete. Ein Gebiet Z ist eingekreist, wenn |Z| ≤ ${E.ENC_MAX}. Springende Helden ändern daran nichts. Die Grenze muss von einem Spieler (bzw. einem Team) stammen: Orange und Violett zusammen kreisen nichts ein.</div>
@@ -248,8 +255,8 @@ function rulesScreen() {
   <p>Ein «Feld» Entfernung heisst: ein Schritt entlang einer Linie. «In gerader Linie» heisst: immer in dieselbe Richtung des Netzes.</p>
   <div class="grid">${heroes}</div>
 
-  <h3>12 · Fortgeschritten: Auren</h3>
-  <p>Schaltest du vor der Partie <b>Fortgeschritten</b> ein, wählt jeder Spieler zu seinen 3 Helden eine <b>Aura</b>. Sie wirkt die ganze Partie und steht oben neben dem Namen.</p>
+  <h3>12 · Profi: Auren</h3>
+  <p>Spielt ihr auf der Stufe <b>Profi</b>, wählt jeder Spieler zu seinen 3 Helden eine <b>Aura</b>. Sie wirkt die ganze Partie und steht oben neben dem Namen.</p>
   <div class="grid">${E.AURA_IDS.map(a => `<div class="hcard"><div class="hn"><span class="badge aurab">${auraIcon}</span><h3 style="font-size:17px;margin:0;color:var(--text)">${E.AURAS[a].name}</h3></div><div class="ab">${E.AURAS[a].desc}</div></div>`).join('')}</div>
 
   <h3>13 · Spiel auf Zeit</h3>
@@ -278,7 +285,7 @@ function rulesScreen() {
   <li>Achte auf die rot markierten Ziele, wenn du eine gegnerische Figur antippst: So siehst du, was dir droht.</li></ul>
 
   <h3>Kurzübersicht</h3>
-  <div class="box"><b>Heldenwahl:</b> 3 Helden, derselbe höchstens zweimal (Fortgeschritten: plus 1 Aura)<br>
+  <div class="box"><b>Heldenwahl:</b> 3 Helden, derselbe höchstens zweimal (Grundspiel: 5 Helden · Erweitert: 10 · Profi: 10 + 1 Aura)<br>
   <b>Pro Zug 2 Aktionen:</b> Legen · Stapeln · Held rufen · Ziehen · Fähigkeit<br>
   <b>Start:</b> erster Node an den Rand, danach nur neben eigene Figuren<br>
   <b>Runde 1–2:</b> keine Helden, kein Einkreisen<br>
@@ -371,7 +378,7 @@ function mlobbyScreen() {
       <div style="text-align:center"><p class="muted" style="margin:0">Raumcode</p><div class="code" style="margin:6px 0 4px">${esc(G.code)}</div>
       <p class="muted" style="margin:0 0 8px;font-size:14px">Die anderen öffnen Nodes, tippen auf «Multiplayer» und geben diesen Code ein.</p>
       ${G.net && G.net.shareUrl ? `<button class="btn small" data-act="share">Link teilen</button>` : ''}</div>
-      <p class="muted" style="margin:8px 0 0;font-size:13px;text-align:center">${s.mode === 'team' ? '2 gegen 2' : '3 Spieler, alle gegen alle'} · ${E.limitOf(s)} Runden · Uhr: ${s.clock ? clockLabel(s.clock.minutes) : 'Aus'} · Aura: ${s.adv ? 'Ein' : 'Aus'}</p>
+      <p class="muted" style="margin:8px 0 0;font-size:13px;text-align:center">${s.mode === 'team' ? '2 gegen 2' : '3 Spieler, alle gegen alle'} · ${E.limitOf(s)} Runden · Uhr: ${s.clock ? clockLabel(s.clock.minutes) : 'Aus'} · ${E.TIERS[E.tierOf(s)]}</p>
       ${seats}
       ${host && bots ? `<div class="clockset"><span style="font-size:15px">Computer</span><div class="seg" role="radiogroup" aria-label="Spielstufe">${Object.entries(LEVELS).map(([k, v]) => `<button class="segbtn ${G.level === k ? 'on' : ''}" role="radio" aria-checked="${G.level === k}" data-act="level" data-l="${k}">${v}</button>`).join('')}</div></div>` : ''}
       ${foot}
@@ -388,19 +395,19 @@ function pickScreen() {
     <p class="muted">${st.picks[G.me].map(h => E.HEROES[h].name).join(' · ')}${st.auras[G.me] ? ' · Aura: ' + E.AURAS[st.auras[G.me]].name : ''}</p>
     <p class="pulse">Warte auf deinen Gegner …</p></div></div>`;
   }
-  const adv = G.mode === 'single' ? G.adv : !!(st && st.adv);
+  const adv = tierNow() === 3;
   const n = G.picks.length;
   const ready = n === 3 && (!adv || G.aura);
   const count = h => G.picks.filter(x => x === h).length;
   const settings = G.mode === 'single'
     ? `<div class="clockset"><span style="font-size:15px">Computer</span><div class="seg" role="radiogroup" aria-label="Spielstufe">${Object.entries(LEVELS).map(([k, v]) => `<button class="segbtn ${G.level === k ? 'on' : ''}" role="radio" aria-checked="${G.level === k}" data-act="level" data-l="${k}">${v}</button>`).join('')}</div></div>` + clockPicker() + roundPicker() + advToggle()
-    : `<p class="muted" style="margin:0 0 12px">${E.limitOf(st)} Runden · Uhr: ${st && st.clock ? clockLabel(st.clock.minutes) : 'Aus'} · Aura: ${adv ? 'Ein' : 'Aus'}</p>`;
+    : `<p class="muted" style="margin:0 0 12px">${E.limitOf(st)} Runden · Uhr: ${st && st.clock ? clockLabel(st.clock.minutes) : 'Aus'} · ${E.TIERS[tierNow()]}</p>`;
   const chosen = `<div class="chosen">${[0, 1, 2].map(k => G.picks[k] ? `<span class="slot on">${heroIcon(G.picks[k], 16)} ${E.HEROES[G.picks[k]].name}</span>` : '<span class="slot">frei</span>').join('')}${adv ? (G.aura ? `<span class="slot on aura">${E.AURAS[G.aura].name}</span>` : '<span class="slot aura">Aura</span>') : ''}</div>`;
   const auraList = adv ? `<h3 class="sect">Aura wählen</h3><div class="grid">${E.AURA_IDS.map(a => `<button class="cardbtn ${G.aura === a ? 'on' : ''}" data-act="aura" data-a="${a}" aria-pressed="${G.aura === a}"><div class="hn"><span class="badge aurab">${auraIcon}</span><h3 style="font-size:17px">${E.AURAS[a].name}</h3></div><div class="ab">${E.AURAS[a].desc}</div></button>`).join('')}</div>` : '';
   return `<div class="screen">
   <div class="top"><button class="icon" data-act="${isMulti() ? 'toLobby' : 'leave'}" aria-label="Zurück">${backIcon}</button><h2>Wähle 3 Helden</h2><span class="muted" style="margin-left:auto">${n}/3</span></div>
   ${settings}
-  <div class="grid">${E.HERO_IDS.map(h => `<button class="cardbtn ${count(h) ? 'on' : ''}" data-act="toggle" data-h="${h}" aria-pressed="${count(h) > 0}">${count(h) ? `<span class="cnt">×${count(h)}</span>` : ''}${heroCard(h)}</button>`).join('')}</div>
+  <div class="grid">${poolNow().map(h => `<button class="cardbtn ${count(h) ? 'on' : ''}" data-act="toggle" data-h="${h}" aria-pressed="${count(h) > 0}">${count(h) ? `<span class="cnt">×${count(h)}</span>` : ''}${heroCard(h)}</button>`).join('')}</div>
   ${auraList}
   <div style="position:sticky;bottom:0;padding:14px 0 6px;background:linear-gradient(transparent,var(--bg) 25%)">
   ${chosen}
@@ -425,6 +432,29 @@ function pieceSvg(c, x, y) {
 }
 const P = i => B.points[i];
 
+// Vorschau: Gebiete, die am Zugende eingekreist werden (mit Gegnerfiguren darin)
+function zones(s) {
+  if (!s || s.phase !== 'play' || s.round < E.HERO_ROUND) return [];
+  const out = [];
+  for (let X = 0; X < s.n; X++) {
+    if (!s.alive[X]) continue;
+    for (const comp of E.trappedAreas(s.cells, X, E.matesOf(s, X))) {
+      const hits = comp.filter(j => { const c = s.cells[j]; return c && c.k !== 'wall' && !c.prot && E.foe(s, c.p, X); });
+      if (hits.length) out.push({ X, comp, hits });
+    }
+  }
+  return out;
+}
+function zoneHint() {
+  const s = G.state, zs = zones(s);
+  if (!zs.length || G.me < 0) return '';
+  const mine = zs.filter(z => z.X === G.me || !E.foe(s, z.X, G.me)).reduce((a, z) => a + z.hits.length, 0);
+  const lost = zs.reduce((a, z) => a + z.hits.filter(j => s.cells[j].p === G.me).length, 0);
+  const parts = [];
+  if (mine) parts.push(`<span style="color:${ME_COL}">Du kreist ${mine} ${mine === 1 ? 'Figur' : 'Figuren'} ein</span>`);
+  if (lost) parts.push(`<span style="color:var(--hit)">${lost} ${lost === 1 ? 'deiner Figuren ist' : 'deiner Figuren sind'} eingekreist</span>`);
+  return parts.length ? `<div class="zonehint">${parts.join(' · ')} <span class="muted">(am Zugende)</span></div>` : '';
+}
 function boardSvg() {
   const s = G.state;
   const { minx, miny, w, h } = VIEW;
@@ -435,6 +465,7 @@ function boardSvg() {
   const now = performance.now();
   let o = `<svg role="img" aria-label="Spielfeld" viewBox="${minx} ${miny} ${w} ${h}"><defs>${HALO}</defs>`;
   B.edges.forEach(([a, b]) => { const A = B.points[a], C = B.points[b]; o += `<line x1="${A.x}" y1="${A.y}" x2="${C.x}" y2="${C.y}" stroke="#34446F" stroke-width="1.6" stroke-linecap="round"/>`; });
+  zones(s).forEach(z => { z.comp.forEach(j => { const pt = B.points[j]; o += `<circle cx="${pt.x}" cy="${pt.y}" r="21" fill="${col(z.X)}" opacity=".16"/>`; }); });
   B.points.forEach((pt, i) => { if (!s.cells[i] || (FX.hide.get(i) || 0) > now) o += `<circle cx="${pt.x}" cy="${pt.y}" r="3.2" fill="#7F8FBF"/>`; });
   (s.mines || []).filter(m => G.me >= 0 && !E.foe(s, m.p, G.me) && !s.cells[m.at]).forEach(m => { const pt = B.points[m.at]; o += `<g aria-label="${m.p === G.me ? 'Deine Mine' : 'Mine deines Partners'}"><circle cx="${pt.x}" cy="${pt.y}" r="8" fill="none" stroke="${col(m.p)}" stroke-width="1.5" stroke-dasharray="2 2"/><path d="M${pt.x - 4} ${pt.y - 4}l8 8M${pt.x + 4} ${pt.y - 4}l-8 8" stroke="${col(m.p)}" stroke-width="1.6"/></g>`; });
   tgt.forEach(i => { const pt = B.points[i]; o += `<circle cx="${pt.x}" cy="${pt.y}" r="10" fill="none" stroke="${ME_COL}" stroke-width="2" stroke-dasharray="3 3"/>`; });
@@ -1076,6 +1107,7 @@ function gameScreen() {
   return `<div class="screen" style="padding:0">
   ${bar}
   <div class="boardwrap">${boardSvg()}</div>
+  ${zoneHint()}
   <div class="status ${G.err ? 'err' : ''}" role="status">${esc(G.msg || s.last || '')}</div>
   ${panel()}
   <div class="heroes">${heroes}</div>
@@ -1203,11 +1235,11 @@ function startSingle() {
 function confirmPick() {
   if (G.picks.length !== 3) return;
   const a = { t: 'pick', p: G.me, heroes: G.picks.slice() };
-  if (G.mode === 'single' ? G.adv : G.state && G.state.adv) a.aura = G.aura;
+  if (tierNow() === 3) a.aura = G.aura;
   if (G.mode === 'single') {
-    let st = E.apply(G.state, { t: 'setup', p: 0, clock: G.clockMin, only: G.me, adv: G.adv, rounds: G.rounds });
+    let st = E.apply(G.state, { t: 'setup', p: 0, clock: G.clockMin, only: G.me, tier: G.tier, rounds: G.rounds });
     st = E.apply(st, a);
-    G.state = E.apply(st, { t: 'pick', p: aiSeat(), heroes: pickHeroes(), aura: G.adv ? pickAura() : undefined });
+    G.state = E.apply(st, { t: 'pick', p: aiSeat(), heroes: pickHeroes(E.heroPool(st)), aura: G.tier === 3 ? pickAura() : undefined });
     G.mark = performance.now();
     G.log = [];
     setMsg(G.state.cur === G.me ? 'Das Los hat entschieden: Du beginnst.' : 'Das Los hat entschieden: Der Computer beginnt.');
@@ -1243,7 +1275,7 @@ function onNetLog(log) {
 }
 
 // ---------- Multiplayer: Platz nehmen und Computer des Gastgebers ----------
-const initAction = () => ({ t: 'init', p: 0, n: G.mn, id: G.myId, name: G.name, clock: G.clockMin, adv: G.adv, rounds: G.rounds });
+const initAction = () => ({ t: 'init', p: 0, n: G.mn, id: G.myId, name: G.name, clock: G.clockMin, tier: G.tier, rounds: G.rounds });
 function maybeSit() {
   const s = G.state;
   if (!isMulti() || !G.net || G.me >= 0 || !s || !s.seated || s.phase !== 'pick' || !s.seated.includes(null)) return;
@@ -1261,7 +1293,7 @@ function driveBots() {
     s.seated.forEach((x, k) => {
       if (x !== 'bot' || s.picks[k] || (G.botPick[k] || 0) > performance.now() - 3000) return;
       G.botPick[k] = performance.now();
-      const a = { t: 'pick', p: k, heroes: pickHeroes() };
+      const a = { t: 'pick', p: k, heroes: pickHeroes(E.heroPool(s)) };
       if (s.adv) a.aura = pickAura();
       G.net.send(a);
     });
@@ -1355,7 +1387,7 @@ function wsNet(code, multi = false) {
         }
         if (m.seat < 0) { setMsg('Dieser Raum ist schon voll', true); G.code = ''; closed = true; ws.close(); render(); return; }
         G.me = m.seat; onNetLog(m.log);
-        if (m.seat === 0 && m.log.length === 0) ws.send(JSON.stringify({ type: 'act', action: { t: 'setup', p: 0, clock: G.clockMin, adv: G.adv, rounds: G.rounds } }));
+        if (m.seat === 0 && m.log.length === 0) ws.send(JSON.stringify({ type: 'act', action: { t: 'setup', p: 0, clock: G.clockMin, tier: G.tier, rounds: G.rounds } }));
       } else if (m.type === 'log') onNetLog(m.log);
       else if (m.type === 'presence') { if (multi) { G.onlineSeats = new Set(m.seats); render(); } else onNetPeers(m.seats.filter(x => x !== G.me).length); }
       else if (m.type === 'error') { setMsg(m.msg, true); render(); }
@@ -1399,7 +1431,7 @@ async function roomNet(code, seat, multi = false) {
   r.presence(multi ? { app: 'nodes', id: G.myId } : { app: 'nodes', seat });
   if (multi) G.onlineIds = new Set();
   if (seat === 0 && G.log.length === 0) {
-    const a = multi ? initAction() : { t: 'setup', p: 0, clock: G.clockMin, adv: G.adv, rounds: G.rounds };
+    const a = multi ? initAction() : { t: 'setup', p: 0, clock: G.clockMin, tier: G.tier, rounds: G.rounds };
     onNetLog([a]);
     r.emit('act', { i: 0, a }).catch(() => {});
   }
@@ -1425,7 +1457,6 @@ app.addEventListener('input', e => {
 });
 app.addEventListener('change', e => {
   if (e.target.id === 'clockrange' || e.target.id === 'roundrange') { saveSettings(); render(); }
-  if (e.target.id === 'advbox') { G.adv = e.target.checked; if (!G.adv) G.aura = null; saveSettings(); render(); }
 });
 app.addEventListener('click', e => {
   const el = e.target.closest('[data-act]');
@@ -1440,6 +1471,7 @@ app.addEventListener('click', e => {
     case 'leave': closeNet(); G.mode = null; G.state = null; G.me = 0; G.screen = 'start'; G.menu = false; setMsg(''); render(); break;
     case 'create': startDuel(newCode(), 0); break;
     case 'multi': closeNet(); G.mode = 'multi'; G.state = null; G.me = -1; G.screen = 'mlobby'; G.code = ''; setMsg(''); render(); break;
+    case 'tier': G.tier = [1, 2, 3].includes(+el.dataset.t) ? +el.dataset.t : 1; if (G.tier !== 3) G.aura = null; G.picks = G.picks.filter(h => poolNow().includes(h)); saveSettings(); render(); break;
     case 'mmode': G.mn = +el.dataset.n === 4 ? 4 : 3; saveSettings(); render(); break;
     case 'mcreate': startMulti(newCode(), true); break;
     case 'mjoin': {
@@ -1481,9 +1513,8 @@ app.addEventListener('click', e => {
     }
     case 'randomPick': {
       // Zufällige Helden (und Aura) und direkt los
-      G.picks = pickHeroes();
-      const adv = G.mode === 'single' ? G.adv : !!(G.state && G.state.adv);
-      G.aura = adv ? pickAura() : null;
+      G.picks = pickHeroes(poolNow());
+      G.aura = tierNow() === 3 ? pickAura() : null;
       confirmPick(); break;
     }
     case 'confirmPick': confirmPick(); break;

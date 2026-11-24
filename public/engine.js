@@ -39,6 +39,12 @@ export const HEROES = {
     s: { name: 'Schwarmangriff', desc: 'Alle deine Drohnen explodieren und zerstören alle benachbarten gegnerischen Figuren.' } },
 };
 export const HERO_IDS = Object.keys(HEROES);
+// Spielstufen: 1 Grundspiel (die ersten 5 Helden), 2 Erweitert (alle 10), 3 Profi (alle 10 + Aura)
+export const TIERS = { 1: 'Grundspiel', 2: 'Erweitert', 3: 'Profi' };
+export const BASIC_HEROES = HERO_IDS.slice(0, 5);
+const tierFrom = a => ([1, 2, 3].includes(a.tier) ? a.tier : a.adv ? 3 : 2);
+export const tierOf = s => (s && s.tier) || (s && s.adv ? 3 : 2);
+export const heroPool = s => (tierOf(s) === 1 ? BASIC_HEROES : HERO_IDS);
 
 // Auren (Fortgeschrittenen-Modus): eine pro Spieler, wirkt die ganze Partie
 export const AURAS = {
@@ -675,7 +681,7 @@ export function apply(s0, a) {
     const m = Math.round(Number(a.clock) || 0);
     if (m < 0 || m > CLOCK_MAX) fail('Ungültige Bedenkzeit');
     g.clock = m ? { minutes: m, left: Array(g.n).fill(m * 60000), only: null } : null;
-    g.adv = !!a.adv;
+    g.tier = tierFrom(a); g.adv = g.tier === 3;
     g.roundLimit = roundsFrom(a.rounds);
     g.seated = Array(g.n).fill(null); g.names = Array(g.n).fill('');
     g.seated[0] = cleanId(a.id) || 'host'; g.names[0] = cleanName(a.name, 0);
@@ -721,7 +727,7 @@ export function apply(s0, a) {
     const m = Math.round(Number(a.clock) || 0);
     if (m < 0 || m > CLOCK_MAX) fail('Ungültige Bedenkzeit');
     s.clock = m ? { minutes: m, left: Array(s.n).fill(m * 60000), only: Number.isInteger(a.only) ? a.only : null } : null;
-    s.adv = !!a.adv;
+    s.tier = tierFrom(a); s.adv = s.tier === 3;
     s.roundLimit = roundsFrom(a.rounds);
     s.seq++; return s;
   }
@@ -731,6 +737,7 @@ export function apply(s0, a) {
     if (s.seated && !s.seated[a.p]) fail('Dieser Platz ist noch frei');
     const hs = a.heroes;
     if (!Array.isArray(hs) || hs.length !== 3 || !hs.every(h => h in HEROES)) fail('Wähle genau 3 Helden');
+    if (!hs.every(h => heroPool(s).includes(h))) fail('Dieser Held ist im Grundspiel nicht dabei');
     if (hs.some(h => hs.filter(x => x === h).length > MAX_SAME)) fail(`Derselbe Held höchstens ${MAX_SAME}-mal`);
     if (s.adv && !(a.aura in AURAS)) fail('Wähle eine Aura');
     s.picks[a.p] = hs.slice();
