@@ -29,13 +29,13 @@ export const HEROES = {
     s: { name: 'Transporter', cost: 1, desc: 'Tauscht den Platz mit einer beliebigen Figur in bis zu 2 Feldern Entfernung.' } },
   warden: { name: 'Warden', abbr: 'Wa', role: 'Verteidigung',
     passive: 'Schutzfeld: Eigene Figuren direkt neben dem Warden können nicht durch Fähigkeiten zerstört, übernommen oder verschoben werden.',
-    n: { name: 'Barriere', desc: 'Setzt eine Energiewand auf ein freies Feld in bis zu 2 Feldern. Sie zählt bis zu deinem nächsten Zug zu deiner Kette und blockiert den Weg.' },
+    n: { name: 'Barriere', desc: 'Setzt eine Energiewand auf ein freies Feld in bis zu 2 Feldern. Sie blockiert den Weg bis zu deinem nächsten Zug, zählt aber nicht zur Kette.' },
     s: { name: 'Lockdown', cost: 1, desc: 'Gegnerische Helden in bis zu 2 Feldern können in ihrem nächsten Zug keine Fähigkeiten nutzen.' } },
   saboteur: { name: 'Saboteur', abbr: 'Sa', role: 'Fallen',
     n: { name: 'Mine', desc: 'Legt eine verdeckte Mine auf ein freies Feld in bis zu 2 Feldern (höchstens 3 gleichzeitig). Landet eine gegnerische Figur darauf, wird sie zerstört.' },
     s: { name: 'Kettenreaktion', desc: 'Zerstört eine benachbarte gegnerische Figur und dazu eine gegnerische Figur, die an sie angrenzt.', steps: ['Wähle die erste Figur.', 'Wähle die angrenzende Figur.'] } },
   schwarm: { name: 'Schwarm', abbr: 'Sw', role: 'Ketten',
-    n: { name: 'Drohne', desc: 'Setzt eine Drohne auf ein freies Nachbarfeld (höchstens 2 gleichzeitig). Drohnen zählen zur Kette, kosten keinen Node und können nicht ziehen.' },
+    n: { name: 'Drohne', desc: 'Setzt eine Drohne auf ein freies Nachbarfeld (höchstens 2 gleichzeitig). Drohnen blockieren den Weg, kosten keinen Node und können nicht ziehen. Zur Kette zählen sie nicht.' },
     s: { name: 'Schwarmangriff', desc: 'Alle deine Drohnen explodieren und zerstören alle benachbarten gegnerischen Figuren.' } },
 };
 export const HERO_IDS = Object.keys(HEROES);
@@ -119,13 +119,65 @@ export function useBoard(x) {
 }
 export const MULTI_NODES = { 3: 15, 4: 12 };
 
+// ---------- Spielziele ----------
+export const GOALS = { classic: 'Klassisch', bridge: 'Brücke', beacon: 'Leuchtfeuer', core: 'Kern' };
+export const ENDPHASE = 5; // in den letzten 5 Runden kommt nichts mehr vom Stapel zurück
+export const inEndphase = s => s.round > limitOf(s) - ENDPHASE;
+const ptAt = (b, q, r) => {
+  // Punkt (q, r) oder, falls er fehlt, der nächste Randpunkt
+  const k = b.points.findIndex(p => p.q === q && p.r === r);
+  if (k >= 0) return k;
+  let best = -1, bd = 1e9;
+  b.points.forEach((p, i) => { if (!p.edge) return; const d = Math.abs(p.q - q) + Math.abs(p.r - r) + Math.abs(-p.q - p.r + q + r); if (d < bd) { bd = d; best = i; } });
+  return best;
+};
+// Brücke: Anfang und Ende je Team (gegenüberliegende Ecken)
+function anchorsFor(b, n, teams) {
+  const R = b.R;
+  const axes = [[[-R, 0], [R, 0]], [[0, -R], [0, R]], [[R, -R], [-R, R]]];
+  const out = {};
+  teams.forEach((t, k) => { out[t] = axes[k % 3].map(([q, r]) => ptAt(b, q, r)); });
+  return out;
+}
+// Leuchtfeuer: 3 Punkte (Duell) bzw. 4 mit der Mitte (Multiplayer)
+function beaconsFor(b, n) {
+  const ring = [[2, 0], [-2, 2], [0, -2]].map(([q, r]) => ptAt(b, q, r));
+  return n > 2 ? [ptAt(b, 0, 0), ...ring] : ring;
+}
+export const BEACON_ROUND = 8; // Leuchtfeuer zählen ab Runde 8
+export const beaconNeed = s => Math.floor(s.beacons.length / 2) + 1;
+export const beaconsHeld = (s, t) => s.beacons.filter(i => { const c = s.cells[i]; return c && c.k !== 'wall' && teamOf(s, owner(c)) === t; }).length;
+// Kürzeste Brücke: wie viele Punkte fehlen noch (über gezeichnete Linien, eigene Kettenfiguren kosten 0)
+export function bridgeGap(s, t) {
+  if (!s.anchors || !s.anchors[t]) return Infinity;
+  useBoard(s);
+  const [a, z] = s.anchors[t];
+  const cost = i => { const c = s.cells[i]; if (!c) return 1; if (teamOf(s, c.p) === t && CHAIN[c.k]) return 0; return Infinity; };
+  const d = Array(V).fill(Infinity);
+  if (cost(a) === Infinity) return Infinity;
+  d[a] = cost(a);
+  const dq = [a];
+  while (dq.length) {
+    const i = dq.shift();
+    for (const j of BOARD.adj[i]) {
+      const w = cost(j); if (w === Infinity) continue;
+      if (d[i] + w < d[j]) { d[j] = d[i] + w; if (w === 0) dq.unshift(j); else dq.push(j); }
+    }
+  }
+  return d[z];
+}
+export const bridgeDone = (s, t) => bridgeGap(s, t) === 0;
+// Brückenziele und ihre direkten Nachbarn sind für Gegner gesperrt (sonst wäre eine Ecke mit 2 Figuren dicht)
+export const anchorZone = (s, t) => { const pts = s.anchors && s.anchors[t]; if (!pts) return []; useBoard(s); return [...new Set(pts.flatMap(i => [i, ...BOARD.adj[i]]))]; };
+const anchorOfFoe = (s, p, i) => !!(s.anchors && Object.keys(s.anchors).some(t => +t !== teamOf(s, p) && anchorZone(s, +t).includes(i)));
+
 // ---------- Hilfen ----------
 const clone = s => JSON.parse(JSON.stringify(s));
 class RuleError extends Error {}
 const fail = msg => { throw new RuleError(msg); };
 export const isRuleError = e => e instanceof RuleError;
 const FIG = { node: 1, pylon: 1, hero: 1 };          // echte Figuren (zählen für Sieg, Punkte, Legen)
-const CHAIN = { node: 1, pylon: 1, wall: 1, drone: 1 }; // bilden Ketten
+const CHAIN = { node: 1, pylon: 1 }; // bilden Ketten (Energiewände und Drohnen blockieren nur)
 const value = c => (c.k === 'node' ? 1 : c.k === 'pylon' || c.k === 'hero' ? 2 : 0);
 export const isFig = c => !!c && !!FIG[c.k];
 export const owner = c => (c.orig ? c.orig.p : c.p);   // Besitzer (bei gehackten Helden der ursprüngliche)
@@ -138,7 +190,7 @@ export function newGame(players = 2, mode = 'ffa') {
   const team = Array.from({ length: players }, (_, p) => (mode === 'team' ? p % 2 : p));
   const start = players > 2 ? MULTI_NODES[players] || START_NODES : START_NODES;
   return {
-    v: 3, n: players, mode, team, phase: 'pick', picks: Array(players).fill(null), adv: false, auras: Array(players).fill(null),
+    v: 4, goal: 'classic', n: players, mode, team, phase: 'pick', picks: Array(players).fill(null), adv: false, auras: Array(players).fill(null),
     cur: 0, actions: 2, round: 1, turnNo: 0,
     cells: Array(b.V).fill(null), mines: [],
     pot: Array(players).fill(start),
@@ -200,10 +252,10 @@ export function placeTargets(s, p) {
   if (s.pot[p] <= 0) return [];
   const own = [];
   s.cells.forEach((c, i) => { if (isFig(c) && c.p === p) own.push(i); });
-  if (own.length === 0) return all().filter(i => BOARD.points[i].edge && !s.cells[i]);
+  if (own.length === 0) return all().filter(i => BOARD.points[i].edge && !s.cells[i] && !anchorOfFoe(s, p, i));
   const set = new Set();
   const far = auraOf(s, p) === 'brueckenkopf' && !s.bridge && s.cur === p;
-  own.forEach(i => (far ? near(i, 2) : BOARD.adj[i]).forEach(j => { if (!s.cells[j]) set.add(j); }));
+  own.forEach(i => (far ? near(i, 2) : BOARD.adj[i]).forEach(j => { if (!s.cells[j] && !anchorOfFoe(s, p, j)) set.add(j); }));
   return [...set].sort((a, b) => a - b);
 }
 const adjacentToOwn = (s, p, at) => BOARD.adj[at].some(j => isFig(s.cells[j]) && s.cells[j].p === p);
@@ -218,6 +270,23 @@ const hittable = (s, p, i) => { const c = enemyAt(s, p, i); return !!c && c.k !=
 
 // Ziele einer Figur. mode: 'move' | 'n' | 's'
 export function targets(s, from, mode, copy = false) {
+  return goalFilter(s, from, targetsRaw(s, from, mode, copy), mode, copy);
+}
+export function nextTargets(s, from, kind, copy, chosen) {
+  return goalFilter(s, from, nextTargetsRaw(s, from, kind, copy, chosen), kind, copy, chosen.length);
+}
+// Spielziele: Der Kern wird nie Ziel und bewegt sich nicht; Brückenziele der Gegner sind gesperrt
+// Fähigkeiten, bei denen eine eigene Figur auf das Zielfeld gelangt
+const MOVERS = new Set(['interceptor:n', 'interceptor:s', 'mimic:s', 'hacker:n']);
+function goalFilter(s, from, list, kind, copy, step = 0) {
+  const c = s.cells[from];
+  if (!c) return list;
+  if (c.core) return [];
+  const key = kind === 'n' || kind === 's' ? abType(c, copy) + ':' + kind : '';
+  const into = MOVERS.has(key) || (key === 'phantom:n' && step === 1);
+  return list.filter(j => { const d = s.cells[j]; if (d && d.core) return false; if ((!d || into) && anchorOfFoe(s, c.p, j)) return false; return true; });
+}
+function targetsRaw(s, from, mode, copy = false) {
   useBoard(s);
   const c = s.cells[from];
   if (!c) return [];
@@ -285,11 +354,11 @@ export function targets(s, from, mode, copy = false) {
 }
 
 // Mehrstufige Fähigkeiten: weitere Ziele nach den bereits gewählten
-export function nextTargets(s, from, kind, copy, chosen) {
+function nextTargetsRaw(s, from, kind, copy, chosen) {
   useBoard(s);
   const c = s.cells[from];
   const t = abType(c, copy);
-  if (chosen.length === 0) return targets(s, from, kind, copy);
+  if (chosen.length === 0) return targetsRaw(s, from, kind, copy);
   const key = t + ':' + kind;
   if (key === 'phantom:n' && chosen.length === 1) return all().filter(j => !s.cells[j]);
   if (key === 'ingenieur:s' && chosen.length === 1) return stapelCount(s, c.p) > 1 ? near(from, 2).filter(j => !s.cells[j] && j !== chosen[0]) : [];
@@ -337,7 +406,7 @@ export function abilityUsable(s, from, kind, copy = false) {
 // ---------- Zerstören, Stapel, Minen ----------
 function toStapel(s, p, n) {
   if (n <= 0) return;
-  if (auraOf(s, p) === 'recycling') s.pot[p] += n;
+  if (auraOf(s, p) === 'recycling' && !inEndphase(s)) s.pot[p] += n;
   else s.stapel[p].push({ n, w: 1 });
 }
 function heroDown(s, c) {
@@ -352,9 +421,10 @@ function downgrade(s, i, enc) { // enc: Spieler, der eingekreist hat (oder false
   s.cells[i] = enc !== false && enc !== undefined ? { p: o, k: 'node', enc: s.turnNo + 1, by: enc } : { p: o, k: 'node' };
 }
 // ab: durch eine Fähigkeit (oder Mine) – dann greift Panzerung
-function destroy(s, i, quiet, ab = true) {
+function destroy(s, i, quiet, ab = true, force = false) {
   const c = s.cells[i];
   if (!c) return;
+  if (c.core && !force) return; // der Kern fällt nur durch Einkreisen
   if (c.k === 'wall' || c.k === 'drone') { if (!quiet) s.fx.push({ k: 'destroy', at: i, p: c.p, unit: c.k, h: null }); s.cells[i] = null; return; }
   const o = owner(c);
   if (ab && auraOf(s, o) === 'panzerung' && (c.k === 'pylon' || c.k === 'hero') && s.armor[o] !== s.turnNo && BOARD.adj[i].some(j => isFig(s.cells[j]) && owner(s.cells[j]) === o)) {
@@ -395,14 +465,17 @@ function doAction(s, a) {
     case 'place': {
       if (!placeTargets(s, p).includes(a.at)) fail(s.pot[p] <= 0 ? 'Dein Pot ist leer' : 'Hier darfst du keinen Node legen');
       if (s.cells.some(c => isFig(c) && c.p === p) && !adjacentToOwn(s, p, a.at)) s.bridge = true;
+      const first = !s.placed[p];
       s.cells[a.at] = { p, k: 'node' }; s.pot[p]--; s.placed[p] = true;
-      s.fx.push({ k: 'place', at: a.at }); s.last = 'Node gelegt';
+      if (first && s.core) { s.cells[a.at].core = true; s.core[p] = a.at; }
+      s.fx.push({ k: 'place', at: a.at }); s.last = first && s.core ? 'Kern gesetzt' : 'Node gelegt';
       land(s, a.at);
       return 1;
     }
     case 'stack': {
       const c = cell(a.at);
       if (!c || c.p !== p || c.k !== 'node') fail('Stapeln geht nur auf einen eigenen Node');
+      if (c.core) fail('Auf den Kern kann nicht gestapelt werden');
       if (s.pot[p] <= 0) fail('Dein Pot ist leer');
       c.k = 'pylon'; delete c.enc; s.pot[p]--; s.fx.push({ k: 'place', at: a.at }); s.last = 'Pylon gebaut'; return 1;
     }
@@ -410,6 +483,7 @@ function doAction(s, a) {
       const c = cell(a.at);
       const fromNode = c && c.p === p && c.k === 'node' && canRufNode(s, p);
       if (!c || c.p !== p || (c.k !== 'pylon' && !fromNode)) fail('Nur ein eigener Pylon wird zum Helden');
+      if (c.core) fail('Der Kern kann kein Held werden');
       if (s.round < heroRound(s, p)) fail(`Helden gibt es erst ab Runde ${heroRound(s, p)}`);
       const slot = HEROES[a.h] ? freeSlot(s, p, a.h) : -1;
       if (slot < 0) fail('Dieser Held ist nicht verfügbar');
@@ -533,12 +607,12 @@ function doAction(s, a) {
   fail('Unbekannte Aktion');
 }
 
-// Gebiete, die durch eine lückenlose Kette von X (Nodes, Pylone, Energiewände, Drohnen) und den Rand abgetrennt sind.
+// Gebiete, die durch eine lückenlose Kette von X (Nodes, Pylone) und den Rand abgetrennt sind.
 // Eingekreist ist ein Gebiet, wenn es kleiner ist als alle anderen Gebiete zusammen.
-// Einkreisen als Graph: K = Punkte mit Kettenfiguren (Node, Pylon, Energiewand, Drohne) von X
+// Einkreisen als Graph: K = Punkte mit Kettenfiguren (Node, Pylon) von X
 // (im 2 gegen 2: von X und Partner). Die Komponenten von G − K entstehen nur über gezeichnete Linien.
 // Eine Komponente Z ist eingekreist, wenn sie höchstens ENC_MAX Punkte hat (Figuren und freie Punkte zusammen).
-export const ENC_MAX = 17;
+export const ENC_MAX = 10;
 export const matesOf = (s, X) => (s && s.team ? s.team.map((t, q) => (t === s.team[X] ? q : -1)).filter(q => q >= 0) : [X]);
 export function trappedAreas(cells, X, mates = null) {
   useBoard(cells);
@@ -573,7 +647,8 @@ function resolve(s, mover) {
         if (c.enc && !(s.turnNo > c.enc - 1 && (!foe(s, s.cur, c.by) || !s.alive[c.by]))) continue; // schon getroffen: erst im nächsten Zug des Einkreisenden wieder
         const eff = c.k === 'node' || c.k === 'drone' ? 'remove' : 'downgrade';
         got.push({ at: j, p: c.p, unit: c.k, h: c.h || null, eff });
-        if (eff === 'remove') destroy(s, j, true, false);
+        if (c.core) { (s.coreLost = s.coreLost || []).push(c.p); }
+        if (eff === 'remove') destroy(s, j, true, false, true);
         else downgrade(s, j, X);
       }
       if (got.length) { s.fx.push({ k: 'encircle', p: X, area: comp, got }); total += got.length; }
@@ -592,7 +667,7 @@ export function captureGain(s, X, at) {
   const cells = s.cells.slice();
   cells[at] = { p: X, k: 'node' };
   let gain = 0;
-  for (const comp of trappedAreas(cells, X, matesOf(s, X))) for (const j of comp) { const c = cells[j]; if (c && c.p !== X && !c.prot && c.k !== 'wall') { const v = c.k === 'node' ? 1 : c.k === 'drone' ? 0.8 : c.k === 'pylon' ? 1.4 : 3.2; if (foe(s, c.p, X)) gain += v; } }
+  for (const comp of trappedAreas(cells, X, matesOf(s, X))) for (const j of comp) { const c = cells[j]; if (c && c.p !== X && !c.prot && c.k !== 'wall') { const v = (c.core ? 20 : 0) + (c.k === 'node' ? 1 : c.k === 'drone' ? 0.8 : c.k === 'pylon' ? 1.4 : 3.2); if (foe(s, c.p, X)) gain += v; } }
   return gain;
 }
 
@@ -626,9 +701,19 @@ function checkWin(s) {
   if (teams.length <= 1) { s.phase = 'over'; s.winner = teams.length ? teams[0] : null; }
 }
 
+// Nach jeder Aktion: Kern unverändert, Brückenziele frei von Gegnern
+function checkGoalRules(s) {
+  if (s.core) s.core.forEach((i, q) => {
+    if (i < 0 || !s.alive[q]) return;
+    const c = s.cells[i];
+    if (!c || c.p !== q || c.k !== 'node' || !c.core) fail('Der Kern kann nicht bewegt, verändert oder zerstört werden');
+  });
+  if (s.anchors) s.cells.forEach((c, i) => { if (c && anchorOfFoe(s, owner(c), i)) fail('Dieser Punkt ist das Brückenziel eines Gegners'); });
+}
 function startTurn(s) {
   const p = s.cur;
-  s.actions = 2;
+  // Rennen (Brücke, Leuchtfeuer): Der Startspieler hat im allerersten Zug nur 1 Aktion
+  s.actions = s.turnNo === 0 && (s.goal === 'bridge' || s.goal === 'beacon') ? 1 : 2;
   s.bridge = false;
   s.cells.forEach((c, i) => {
     if (!c || c.p !== p) return;
@@ -636,7 +721,8 @@ function startTurn(s) {
     if (c.k === 'wall') s.cells[i] = null; // Energiewand verschwindet
   });
   const keep = [];
-  for (const e of s.stapel[p]) { if (e.w <= 0) s.pot[p] += e.n; else { e.w--; keep.push(e); } }
+  // Endphase: Nichts kommt mehr vom Stapel zurück
+  for (const e of s.stapel[p]) { if (inEndphase(s)) keep.push(e); else if (e.w <= 0) s.pot[p] += e.n; else { e.w--; keep.push(e); } }
   s.stapel[p] = keep;
   s.hwait[p] = s.hwait[p].map(w => Math.max(0, w - 1));
 }
@@ -644,6 +730,25 @@ function endTurn(s) {
   const p = s.cur;
   // Einkreisen wirkt erst, wenn der Zug fertig ist (der Spieler am Zug zuerst, dann die anderen)
   if (s.alive[p]) resolve(s, p);
+  // Kern eingekreist: Dieser Spieler scheidet aus, seine Figuren verschwinden
+  if (s.coreLost && s.coreLost.length) {
+    for (const q of new Set(s.coreLost)) {
+      s.alive[q] = false;
+      s.cells.forEach((c, i) => { if (c && owner(c) === q) s.cells[i] = null; });
+      s.mines = s.mines.filter(m => m.p !== q);
+      s.fx.push({ k: 'coreLost', p: q });
+    }
+    s.last = (s.last ? s.last + ' · ' : '') + 'Kern gefallen';
+    delete s.coreLost;
+    const teams = liveTeams(s);
+    if (teams.length <= 1) { s.phase = 'over'; s.winner = teams.length ? teams[0] : null; s.endReason = 'core'; return; }
+  }
+  // Brücke: am Zugende prüfen (zuerst das Team am Zug)
+  if (s.anchors) {
+    const order = [teamOf(s, p), ...liveTeams(s).filter(t => t !== teamOf(s, p))];
+    const t = order.find(t => liveTeams(s).includes(t) && bridgeDone(s, t));
+    if (t !== undefined) { s.phase = 'over'; s.winner = t; s.endReason = 'bridge'; s.last = 'Brücke geschlagen'; return; }
+  }
   s.cells.forEach(c => {
     if (!c || c.p !== p) return;
     delete c.stun; delete c.shot; delete c.lock;
@@ -665,8 +770,22 @@ function endTurn(s) {
     return;
   }
   startTurn(s);
+  // Leuchtfeuer: Wer zu Beginn seines Zuges die Mehrheit hält, gewinnt
+  if (s.beacons && s.round >= BEACON_ROUND) {
+    const t = teamOf(s, s.cur);
+    if (beaconsHeld(s, t) >= beaconNeed(s)) { s.phase = 'over'; s.winner = t; s.endReason = 'beacon'; s.last = 'Leuchtfeuer gehalten'; }
+  }
 }
 
+function setGoal(s, goal) {
+  s.goal = goal in GOALS ? goal : 'classic';
+  const b = boardOf(s);
+  const teams = [...new Set(s.team || [0, 1])];
+  delete s.anchors; delete s.beacons; delete s.core;
+  if (s.goal === 'bridge') s.anchors = anchorsFor(b, s.n, teams);
+  if (s.goal === 'beacon') s.beacons = beaconsFor(b, s.n);
+  if (s.goal === 'core') s.core = Array(s.n).fill(-1);
+}
 const cleanName = (v, k) => String(v || '').replace(/[<>&"'`]/g, '').trim().slice(0, 14) || `Spieler ${k + 1}`;
 const cleanId = v => String(v || '').slice(0, 64);
 export const isBot = (s, p) => !!(s.seated && s.seated[p] === 'bot');
@@ -682,6 +801,7 @@ export function apply(s0, a) {
     if (m < 0 || m > CLOCK_MAX) fail('Ungültige Bedenkzeit');
     g.clock = m ? { minutes: m, left: Array(g.n).fill(m * 60000), only: null } : null;
     g.tier = tierFrom(a); g.adv = g.tier === 3;
+    setGoal(g, a.goal);
     g.roundLimit = roundsFrom(a.rounds);
     g.seated = Array(g.n).fill(null); g.names = Array(g.n).fill('');
     g.seated[0] = cleanId(a.id) || 'host'; g.names[0] = cleanName(a.name, 0);
@@ -728,6 +848,7 @@ export function apply(s0, a) {
     if (m < 0 || m > CLOCK_MAX) fail('Ungültige Bedenkzeit');
     s.clock = m ? { minutes: m, left: Array(s.n).fill(m * 60000), only: Number.isInteger(a.only) ? a.only : null } : null;
     s.tier = tierFrom(a); s.adv = s.tier === 3;
+    setGoal(s, a.goal);
     s.roundLimit = roundsFrom(a.rounds);
     s.seq++; return s;
   }
@@ -765,6 +886,7 @@ export function apply(s0, a) {
   if (s.clock && (s.clock.only === null || s.clock.only === s.cur) && tick(s, a.spent)) { s.seq++; return s; }
   if (a.t === 'end') { endTurn(s); checkWin(s); if (!s.last) s.last = 'Zug beendet'; s.seq++; return s; }
   const cost = doAction(s, a);
+  checkGoalRules(s);
   s.actions -= cost;
   checkWin(s);
   if (s.phase === 'play' && s.actions <= 0) { endTurn(s); checkWin(s); }
@@ -781,8 +903,8 @@ export function legalActions(s, lite = false) {
   const heroes = availableHeroes(s, p);
   s.cells.forEach((c, i) => {
     if (!c || c.p !== p) return;
-    if (c.k === 'node' && s.pot[p] > 0) out.push({ t: 'stack', p, at: i });
-    if (c.k === 'pylon' || (c.k === 'node' && canRufNode(s, p))) heroes.forEach(h => out.push({ t: 'hero', p, at: i, h }));
+    if (c.k === 'node' && s.pot[p] > 0 && !c.core) out.push({ t: 'stack', p, at: i });
+    if (c.k === 'pylon' || (c.k === 'node' && !c.core && canRufNode(s, p))) heroes.forEach(h => out.push({ t: 'hero', p, at: i, h }));
     targets(s, i, 'move').forEach(to => out.push({ t: 'move', p, from: i, to }));
     if (c.k === 'hero' && !c.stun && !c.lock) {
       for (const copy of c.as ? [false, true] : [false]) {
@@ -799,7 +921,7 @@ export function legalActions(s, lite = false) {
             if (lite) continue;
             const busy = new Set();
             s.cells.forEach((o, j) => { if (isFig(o)) BOARD.adj[j].forEach(x => { if (!s.cells[x]) busy.add(x); }); });
-            first.filter(j => s.cells[j].k !== 'node').forEach(u => busy.forEach(d => out.push({ ...base, target: u, target2: d })));
+            first.filter(j => s.cells[j].k !== 'node').forEach(u => busy.forEach(d => { if (!anchorOfFoe(s, p, d)) out.push({ ...base, target: u, target2: d }); }));
           } else if (key === 'ingenieur:s') {
             first.forEach((u, x) => { out.push({ ...base, target: u }); if (!lite && stapelCount(s, p) > 1) first.slice(x + 1).forEach(v => out.push({ ...base, target: u, target2: v })); });
           } else if (key === 'saboteur:s') {

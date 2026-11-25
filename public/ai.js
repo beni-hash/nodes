@@ -1,5 +1,5 @@
 // Nodes – Computergegner: bewertet alle Zugpaare (2 Aktionen) und nimmt das beste.
-import { apply, legalActions, targets, heroType, BOARD, stapelCount, HERO_IDS, AURA_IDS, placeTargets, captureGain, HERO_ROUND, trappedAreas, hideMines, minesOf, NB, useBoard, foe, teamOf, matesOf } from './engine.js';
+import { apply, legalActions, targets, heroType, BOARD, stapelCount, HERO_IDS, AURA_IDS, placeTargets, captureGain, HERO_ROUND, trappedAreas, hideMines, minesOf, NB, useBoard, foe, teamOf, matesOf, bridgeGap, beaconsHeld, beaconNeed } from './engine.js';
 
 const VAL = { node: 1, pylon: 2.4, hero: 4.2, wall: 0.3, drone: 0.9 };
 
@@ -30,6 +30,7 @@ export function evaluate(s, p) {
     s.cells.forEach((c, i) => {
       if (!c || c.p !== q) return;
       mat += c.orig ? 1.8 : VAL[c.k];           // gehackter Held: nur geliehen
+      if (c.core) mat += 6;
       if (c.stun) mat -= 0.8;
       if (c.lock) mat -= 0.5;
       BOARD.adj[i].forEach(j => { if (!s.cells[j]) lib++; });
@@ -49,6 +50,7 @@ export function evaluate(s, p) {
     threats(s, q).forEach(j => { const c = s.cells[j]; if (c && c.p === p && !c.prot) score -= 0.6 * VAL[c.k]; });
     threats(s, p).forEach(j => { const c = s.cells[j]; if (c && c.p === q) score += 0.25 * VAL[c.k]; });
   }
+  score += goalScore(s, p);
   // Einkreisungen, die mit einem einzigen Node möglich wären
   for (let q = 0; q < s.n; q++) {
     if (!s.alive[q] || s.pot[q] <= 0) continue;
@@ -59,6 +61,30 @@ export function evaluate(s, p) {
   return score;
 }
 
+// Spielziele: Brücke, Leuchtfeuer (der Kern steckt in Material und Sicherheit)
+function goalScore(s, p) {
+  const me = teamOf(s, p);
+  const foeTeams = [...new Set(s.alive.map((a, q) => (a && foe(s, q, p) ? teamOf(s, q) : -1)).filter(t => t >= 0))];
+  let v = 0;
+  if (s.anchors) {
+    const f = g => (g === Infinity ? 0 : 40 / (g + 2));
+    v += f(bridgeGap(s, me));
+    for (const t of foeTeams) {
+      const g = bridgeGap(s, t);
+      v -= f(g) * (foeTeams.length > 1 ? 0.7 : 1);
+      if (g <= 2) v -= g <= 1 ? 60 : 30; // Gegner kann im nächsten Zug fertig bauen
+    }
+  }
+  if (s.beacons) {
+    const need = beaconNeed(s), mine = beaconsHeld(s, me);
+    v += 7 * mine + (mine >= need ? 25 : 0);
+    for (const t of foeTeams) { const h = beaconsHeld(s, t); v -= 7 * h + (h >= need - 1 ? 12 : 0); }
+    // Nähe zu freien Leuchtfeuern
+    s.beacons.forEach(i => { if (s.cells[i]) return; if (BOARD.adj[i].some(j => s.cells[j] && teamOf(s, s.cells[j].p) === me)) v += 1.5; });
+  }
+  return v;
+}
+
 function safeApply(s, a) { try { return apply(s, a); } catch { return null; } }
 
 // Was könnte X mit zwei gelegten Nodes einkreisen? (auch schon in der Aufbauphase, um vorzusorgen)
@@ -66,9 +92,9 @@ let MATES = null; // Teams der aktuellen Bewertung
 function regionLoss(cells, X, victim) {
   let lost = 0, count = 0, room = BOARD.V;
   const trapped = trappedAreas(cells, X, MATES ? MATES[X] : null);
-  for (const comp of trapped) for (const j of comp) { const c = cells[j]; if (c && c.p === victim && !c.prot && c.k !== 'wall') { lost += c.k === 'node' ? 1 : c.k === 'drone' ? VAL.drone : VAL[c.k] - 1; if (c.k === 'node') count++; } }
+  for (const comp of trapped) for (const j of comp) { const c = cells[j]; if (c && c.p === victim && !c.prot && c.k !== 'wall') { lost += c.core ? 60 : c.k === 'node' ? 1 : c.k === 'drone' ? VAL.drone : VAL[c.k] - 1; if (c.k === 'node') count++; } }
   // Platz: kleinstes Gebiet, in dem eine eigene Figur steht (nur relevant, wenn knapp)
-  const seenWall = i => { const c = cells[i]; return c && (MATES ? MATES[X] : [X]).includes(c.p) && (c.k === 'node' || c.k === 'pylon' || c.k === 'wall' || c.k === 'drone'); };
+  const seenWall = i => { const c = cells[i]; return c && (MATES ? MATES[X] : [X]).includes(c.p) && (c.k === 'node' || c.k === 'pylon'); };
   const seen = new Uint8Array(BOARD.V);
   let best = 0;
   for (let i = 0; i < BOARD.V; i++) {

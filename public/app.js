@@ -50,15 +50,16 @@ const G = {
   screen: 'start', mode: null, me: 0, log: [], state: null,
   sel: null, pending: null, picks: [], msg: '', err: false,
   net: null, code: '', peers: 0, aiBusy: false, menu: false, ruleBack: 'start', fx: null,
-  bigFx: true, clockMin: 0, mark: 0, timeoutSent: -1, level: 'medium', tier: 1, aura: null,
+  bigFx: true, clockMin: 0, mark: 0, timeoutSent: -1, level: 'medium', tier: 1, goal: 'classic', aura: null,
   name: '', mn: 3, rounds: 30, myId: '', host: false, onlineIds: null, onlineSeats: new Set(), sitAt: 0, botPick: {}, botTimer: null, botPlan: null, botLastSeq: -1,
 };
-try { const v = JSON.parse(localStorage.getItem('nodes-settings') || '{}'); if (typeof v.bigFx === 'boolean') G.bigFx = v.bigFx; if (Number.isInteger(v.clockMin)) G.clockMin = v.clockMin; if (v.level in { easy: 1, medium: 1, hard: 1 }) G.level = v.level; if ([1, 2, 3].includes(v.tier)) G.tier = v.tier; else if (typeof v.adv === 'boolean') G.tier = v.adv ? 3 : 2; if (typeof v.name === 'string') G.name = v.name.slice(0, 14); if (v.mn === 3 || v.mn === 4) G.mn = v.mn; if (v.rounds >= 10 && v.rounds <= 50) G.rounds = v.rounds; } catch {}
-const saveSettings = () => { try { localStorage.setItem('nodes-settings', JSON.stringify({ bigFx: G.bigFx, clockMin: G.clockMin, level: G.level, tier: G.tier, name: G.name, mn: G.mn, rounds: G.rounds })); } catch {} };
+try { const v = JSON.parse(localStorage.getItem('nodes-settings') || '{}'); if (typeof v.bigFx === 'boolean') G.bigFx = v.bigFx; if (Number.isInteger(v.clockMin)) G.clockMin = v.clockMin; if (v.level in { easy: 1, medium: 1, hard: 1 }) G.level = v.level; if (v.goal in E.GOALS) G.goal = v.goal; if ([1, 2, 3].includes(v.tier)) G.tier = v.tier; else if (typeof v.adv === 'boolean') G.tier = v.adv ? 3 : 2; if (typeof v.name === 'string') G.name = v.name.slice(0, 14); if (v.mn === 3 || v.mn === 4) G.mn = v.mn; if (v.rounds >= 10 && v.rounds <= 50) G.rounds = v.rounds; } catch {}
+const saveSettings = () => { try { localStorage.setItem('nodes-settings', JSON.stringify({ bigFx: G.bigFx, clockMin: G.clockMin, level: G.level, tier: G.tier, goal: G.goal, name: G.name, mn: G.mn, rounds: G.rounds })); } catch {} };
 const reduced = () => window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 // Neuer Spielstand; gibt die Dauer der Effekte zurück
 function setState(next, animate = true) {
   G.state = next;
+  if (next && next.phase !== 'over') G.viewBoard = false;
   syncBoard();
   G.mark = performance.now();
   return animate ? playFx(next) : 0;
@@ -125,6 +126,14 @@ function emblem(size) {
 
 const TIER_TXT = { 1: '5 Helden: Titan, Sniper, Interceptor, Phantom, Hacker. Ideal zum Lernen.', 2: 'Alle 10 Helden.', 3: 'Alle 10 Helden, dazu wählt jeder eine Aura mit Dauerbonus.' };
 const advToggle = () => `<div class="clockset"><span style="font-size:15px"><b>Spielstufe</b></span><div class="seg" role="radiogroup" aria-label="Spielstufe">${[1, 2, 3].map(t => `<button class="segbtn ${G.tier === t ? 'on' : ''}" role="radio" aria-checked="${G.tier === t}" data-act="tier" data-t="${t}">${E.TIERS[t]}</button>`).join('')}</div><div class="muted" style="font-size:13px">${TIER_TXT[G.tier]}</div></div>`;
+const GOAL_TXT = {
+  classic: 'Gewinnt, wer die anderen vom Feld fegt, sonst zählen am Schluss die Punkte.',
+  bridge: 'Verbinde deine zwei markierten Punkte mit einer durchgehenden Kette. Wer das zuerst schafft, gewinnt.',
+  beacon: `Halte die Mehrheit der Leuchtfeuer zu Beginn deines Zuges (ab Runde ${E.BEACON_ROUND}).`,
+  core: 'Dein erster Node ist dein Kern. Wird er eingekreist, hast du verloren.',
+};
+const goalPicker = () => `<div class="clockset"><span style="font-size:15px"><b>Spielziel</b></span><div class="seg seg4" role="radiogroup" aria-label="Spielziel">${Object.entries(E.GOALS).map(([k, v]) => `<button class="segbtn ${G.goal === k ? 'on' : ''}" role="radio" aria-checked="${G.goal === k}" data-act="goal" data-g="${k}">${v}</button>`).join('')}</div><div class="muted" style="font-size:13px">${GOAL_TXT[G.goal]}</div></div>`;
+const goalNow = () => (G.mode === 'single' ? G.goal : (G.state && G.state.goal) || 'classic');
 const tierNow = () => (G.mode === 'single' ? G.tier : E.tierOf(G.state));
 const poolNow = () => (tierNow() === 1 ? E.BASIC_HEROES : E.HERO_IDS);
 const clockLabel = m => (m ? `${m} Min.` : 'Aus');
@@ -145,7 +154,7 @@ function render() {
   else if (s === 'mlobby') html = mlobbyScreen();
   else if (s === 'pick') html = pickScreen();
   else if (s === 'game') html = gameScreen();
-  app.innerHTML = html + (G.menu ? menuOverlay() : '') + (G.screen === 'game' && G.state && G.state.phase === 'over' ? overOverlay() : '');
+  app.innerHTML = html + (G.menu ? menuOverlay() : '') + (G.screen === 'game' && G.state && G.state.phase === 'over' ? (G.viewBoard ? viewBar() : overOverlay()) : '');
   syncFx();
 }
 
@@ -223,11 +232,11 @@ function rulesScreen() {
   <p>In <b>Runde 1 und 2</b> gibt es noch keine Helden und kein Einkreisen. Beide Spieler können sich in Ruhe ausbreiten. Ab Runde ${E.HERO_ROUND} gelten alle Regeln.</p>
 
   <h3>7 · Einkreisen</h3>
-  <p>Deine <b>Nodes, Pylone, Energiewände und Drohnen</b> bilden zusammen Ketten. Helden gehören nicht zur Kette. Am Ende jedes Zuges wird geprüft, ob eine Kette zusammen mit dem Spielfeldrand ein Gebiet vom Rest des Feldes abschneidet.</p>
+  <p>Deine <b>Nodes und Pylone</b> bilden zusammen Ketten. Helden, Energiewände und Drohnen gehören nicht zur Kette. Am Ende jedes Zuges wird geprüft, ob eine Kette zusammen mit dem Spielfeldrand ein Gebiet vom Rest des Feldes abschneidet.</p>
   <p><b>Vorschau:</b> Gebiete, die am Zugende eingekreist werden, sind auf dem Feld schwach in der Farbe des Einkreisenden eingefärbt. Unter dem Feld steht, wie viele Figuren betroffen sind. So siehst du vor dem Zugende, was passieren wird, und kannst noch reagieren.</p>
   <p><b>Es zählen nur die gezeichneten Linien.</b> Ein Gebiet ist abgeschlossen, wenn jede Linie, die aus dem Gebiet hinausführt, auf eine Figur deiner Kette trifft. Wo zwischen zwei Punkten keine Linie gezeichnet ist, gibt es auch keinen Weg hinaus. Die Kette selbst muss nicht zusammenhängen, und freie Punkte im Gebiet retten nichts.</p>
   <p>Ein abgeschlossenes Gebiet ist <b>eingekreist</b>, wenn es <b>höchstens ${E.ENC_MAX} Punkte</b> umfasst. Gezählt werden die Figuren darin und die freien Punkte zusammen. Grössere Gebiete gelten nicht als eingekreist, auch wenn sie abgeschnitten sind.</p>
-  <div class="box"><b>Genau gesagt:</b> Das Spielfeld ist ein Graph aus Punkten und Linien. K sind die Punkte mit deinen Kettenfiguren (im 2 gegen 2 auch die deines Partners). Entfernt man K, zerfällt der Rest in zusammenhängende Gebiete. Ein Gebiet Z ist eingekreist, wenn |Z| ≤ ${E.ENC_MAX}. Springende Helden ändern daran nichts. Die Grenze muss von einem Spieler (bzw. einem Team) stammen: Orange und Violett zusammen kreisen nichts ein.</div>
+  <div class="box"><b>Genau gesagt:</b> Das Spielfeld ist ein Graph aus Punkten und Linien. K sind die Punkte mit deinen Nodes und Pylonen (im 2 gegen 2 auch die deines Partners). Entfernt man K, zerfällt der Rest in zusammenhängende Gebiete. Ein Gebiet Z ist eingekreist, wenn |Z| ≤ ${E.ENC_MAX}. Springende Helden ändern daran nichts. Die Grenze muss von einem Spieler (bzw. einem Team) stammen: Orange und Violett zusammen kreisen nichts ein.</div>
   <p><b>Die Einkreisung schlägt am Ende des Zuges zu</b>, also erst, wenn der Spieler am Zug beide Aktionen gemacht oder seinen Zug beendet hat. Zuerst wird geprüft, was er selbst einkreist, danach die Ketten der anderen. Alle gegnerischen Figuren im eingekreisten Gebiet werden getroffen. Eigene Figuren (und im 2 gegen 2 die deines Partners) bleiben unberührt:</p>
   <ul><li><b>Node und Drohne:</b> werden entfernt.</li><li><b>Pylon:</b> verliert einen Node und wird zum Node.</li><li><b>Held:</b> verliert seine Kraft und wird zum Node. Er muss eine Runde warten, bevor du ihn wieder rufen kannst.</li></ul>
   <p><b>Zweiter Treffer.</b> Figuren, die einen Treffer als Node überlebt haben, bekommen einen gestrichelten roten Ring. Ihr Besitzer hat nun einen Zug Zeit, sie zu befreien. Sind sie danach immer noch eingeschlossen, werden sie am Ende des nächsten Zuges des Einkreisenden entfernt.</p>
@@ -246,8 +255,8 @@ function rulesScreen() {
   <p>Figuren direkt neben einem <b>Warden</b> stehen in seinem Schutzfeld und können nicht durch Fähigkeiten zerstört, übernommen oder verschoben werden. Du erkennst sie an einem feinen Ring mit kleinem Schild. Einkreisen und Minen wirken trotzdem.</p>
 
   <h3>10 · Besondere Figuren</h3>
-  <p><b>Energiewand</b> (Warden): ein Quadrat in deiner Farbe. Sie zählt bis zu deinem nächsten Zug zu deiner Kette, blockiert den Weg und kann weder zerstört noch eingekreist werden.</p>
-  <p><b>Drohne</b> (Schwarm): ein kleines Dreieck. Sie zählt zu deiner Kette, kostet keinen Node und kann nicht ziehen. Ein Treffer oder eine Einkreisung zerstört sie. Du kannst höchstens 2 gleichzeitig haben.</p>
+  <p><b>Energiewand</b> (Warden): ein Quadrat in deiner Farbe. Sie blockiert bis zu deinem nächsten Zug den Weg und kann weder zerstört noch eingekreist werden. Zur Kette zählt sie nicht: Ein Gebiet ist durch eine Wand nicht abgeschlossen.</p>
+  <p><b>Drohne</b> (Schwarm): ein kleines Dreieck. Sie blockiert den Weg, kostet keinen Node und kann nicht ziehen. Zur Kette zählt sie nicht. Ein Treffer oder eine Einkreisung zerstört sie. Du kannst höchstens 2 gleichzeitig haben.</p>
   <p><b>Mine</b> (Saboteur): Deine eigenen Minen siehst du als gestricheltes ✕, die deines Gegners siehst du nicht. Landet eine gegnerische Figur durch Legen, Ziehen, Springen oder Tauschen auf einer Mine, wird sie zerstört. Höchstens 3 Minen gleichzeitig.</p>
   <p><b>Gehackter Held</b> (Hacker): Er erscheint in der Farbe seines neuen Herrn, mit einem gestrichelten Ring in der alten Farbe und einer grünen Zahl, die anzeigt, wie viele Züge er noch bleibt. Danach kehrt er zurück. Wird er vorher zerstört, verliert ihn sein ursprünglicher Besitzer.</p>
 
@@ -265,6 +274,7 @@ function rulesScreen() {
 
   <h3>14 · Spielende</h3>
   <p><b>Rundenlimit:</b> Nach der eingestellten Rundenzahl endet die Partie (10 bis 50 Runden, Standard ${E.ROUND_LIMIT}). Du stellst sie vor der Partie mit dem Regler «Runden» ein. Gezählt werden die Figuren auf dem Feld: <b>Node 1 Punkt, Pylon 2, Held 3</b>. Wer mehr Punkte hat, gewinnt, bei Gleichstand ist es unentschieden. Die aktuelle Runde siehst du oben in der Mitte.</p>
+  <p><b>Endphase:</b> In den letzten ${E.ENDPHASE} Runden kommt nichts mehr vom Stapel zurück, auch nicht mit der Aura Recycling. Jede verlorene Figur fehlt dann endgültig. Unter dem Feld steht, wann die Endphase beginnt.</p>
   <p>Die Partie endet sofort, wenn ein Spieler keine Figur mehr auf dem Feld hat. Sein Gegner gewinnt. Über das Menü (☰) kannst du auch aufgeben.</p>
 
   <h3>15 · Multiplayer</h3>
@@ -272,12 +282,20 @@ function rulesScreen() {
   <ul><li><b>3 Spieler, alle gegen alle:</b> Jeder spielt für sich, jeder hat 15 Nodes.</li>
   <li><b>2 gegen 2:</b> Zwei Teams. Die Teams sind abwechselnd am Zug (Team A, Team B, Team A, Team B). Jeder Spieler hat 12 Nodes.</li></ul>
   <p>Gespielt wird auf einem <b>grösseren Netz aus 85 Punkten</b>. Wer nicht als Erster am Zug ist, bekommt wie im Duell 1 Node mehr. Deine Figuren sind orange, die deines Partners gelb, die Gegner blau und violett.</p>
-  <p><b>Ketten und Einkreisen.</b> Im 2 gegen 2 bilden du und dein Partner die Grenze <b>gemeinsam</b>: Eure Nodes, Pylone, Energiewände und Drohnen zählen zusammen als eine Kette. Bei 3 Spielern zählt nur die eigene Kette; eine Grenze aus Figuren zweier Gegner kreist nichts ein. Eingekreist werden <b>nur Gegner</b>. Deine eigenen Figuren und die deines Partners bleiben stehen, auch wenn sie in einem eingekreisten Gebiet stehen.</p>
+  <p><b>Ketten und Einkreisen.</b> Im 2 gegen 2 bilden du und dein Partner die Grenze <b>gemeinsam</b>: Eure Nodes und Pylone zählen zusammen als eine Kette. Bei 3 Spielern zählt nur die eigene Kette; eine Grenze aus Figuren zweier Gegner kreist nichts ein. Eingekreist werden <b>nur Gegner</b>. Deine eigenen Figuren und die deines Partners bleiben stehen, auch wenn sie in einem eingekreisten Gebiet stehen.</p>
   <p><b>Fähigkeiten</b> treffen nur Gegner. Minen zünden nur unter Gegnern, und dein Partner sieht deine Minen. Das Schutzfeld des Warden und das Energieschild schützen nur die eigenen Figuren.</p>
   <p><b>Ausscheiden und Sieg.</b> Wer keine Figur mehr auf dem Feld hat, scheidet aus und wird übersprungen. Ein Team ist erst draussen, wenn beide Spieler ausgeschieden sind. Es gewinnt, wer als Letzter (bzw. als letztes Team) übrig ist. Beim Rundenlimit und wenn eine Uhr abläuft, zählen die Punkte, im 2 gegen 2 pro Team zusammengezählt.</p>
   <p><b>Freie Plätze.</b> Wer den Raum erstellt, kann freie Plätze mit dem Computer besetzen. Vor der Heldenwahl kannst du auf einen freien Platz wechseln, zum Beispiel ins andere Team.</p>
 
-  <h3>16 · Tipps</h3>
+  <h3>16 · Spielziele</h3>
+  <p>Vor der Partie wählst du neben der Spielstufe auch das <b>Spielziel</b>. Alle Regeln oben gelten weiter, dazu kommt ein zusätzlicher Weg zum Sieg:</p>
+  <ul><li><b>Klassisch:</b> Wer alle anderen vom Feld fegt, gewinnt. Sonst entscheiden am Ende die Punkte.</li>
+  <li><b>Brücke:</b> Jeder Spieler (im 2 gegen 2 jedes Team) hat zwei markierte Punkte (Rauten) in gegenüberliegenden Ecken, Anfang und Ende. Wer sie mit einer durchgehenden Kette aus eigenen Nodes und Pylonen verbindet (Energiewände und Drohnen zählen nicht), gewinnt. Der Weg ist egal, es zählen nur die gezeichneten Linien. Geprüft wird am Zugende. Auf die markierten Punkte eines Gegners und auf die Punkte direkt daneben darfst du keine Figur stellen (sie sind schwach markiert).</li>
+  <li><b>Leuchtfeuer:</b> Auf dem Feld sind 3 Leuchtfeuer (im Multiplayer 4). Hältst du ab Runde ${E.BEACON_ROUND} zu Beginn deines Zuges die Mehrheit davon mit eigenen Figuren besetzt (2 von 3 bzw. 3 von 4), gewinnst du. Die anderen haben also immer noch einen Zug Zeit, dich zu vertreiben.</li>
+  <li><b>Kern:</b> Dein erster gesetzter Node ist dein Kern (mit Ring markiert). Er gehört zur Kette, zieht aber nicht, wird nicht gestapelt und kann durch keine Fähigkeit zerstört werden. Wird er eingekreist, scheidest du aus, und deine Figuren verschwinden. Im 2 gegen 2 ist ein Team erst draussen, wenn beide Kerne gefallen sind.</li></ul>
+  <p>Brücke und Leuchtfeuer sind Wettrennen. Damit der Startspieler keinen Vorsprung hat, hat er dort im allerersten Zug nur <b>1 Aktion</b>.</p>
+
+  <h3>17 · Tipps</h3>
   <ul><li>Baue früh Pylone: Sie zählen zur Kette, ziehen weit und werden später zu Helden.</li>
   <li>Lass keine einzelnen Nodes am Rand stehen, sie sind leicht einzukreisen.</li>
   <li>Pylone und Helden überleben eine Einkreisung als Node. Befreie sie danach schnell, indem du die gegnerische Kette an ihrer schwächsten Stelle aufbrichst.</li>
@@ -289,12 +307,14 @@ function rulesScreen() {
   <b>Pro Zug 2 Aktionen:</b> Legen · Stapeln · Held rufen · Ziehen · Fähigkeit<br>
   <b>Start:</b> erster Node an den Rand, danach nur neben eigene Figuren<br>
   <b>Runde 1–2:</b> keine Helden, kein Einkreisen<br>
-  <b>Einkreisen:</b> Ketten aus Nodes, Pylonen, Energiewänden und Drohnen; nur gezeichnete Linien zählen; Gebiet höchstens ${E.ENC_MAX} Punkte<br>
+  <b>Einkreisen:</b> Ketten nur aus Nodes und Pylonen; nur gezeichnete Linien zählen; Gebiet höchstens ${E.ENC_MAX} Punkte<br>
   <b>Treffer (am Zugende):</b> Node und Drohne weg · Pylon und Held werden Node, im nächsten Zug weg, wenn nicht befreit<br>
   <b>Entfernt:</b> Nodes auf den Stapel, nach einer Runde Pause zurück in den Pot<br>
   <b>Sieg:</b> Der Gegner hat keine Figur mehr auf dem Feld, oder du hast nach der eingestellten Rundenzahl (10–50) mehr Punkte<br>
   <b>Ausgleich:</b> Der Nachzieher startet mit 16 Nodes<br>
   <b>Auf Zeit:</b> Läuft eine Uhr ab, gewinnt, wer mehr Punkte hat (Node 1 · Pylon 2 · Held 3)<br>
+  <b>Endphase:</b> letzte ${E.ENDPHASE} Runden, nichts kommt vom Stapel zurück<br>
+  <b>Spielziele:</b> Klassisch · Brücke (2 Rauten verbinden) · Leuchtfeuer (Mehrheit ab Runde ${E.BEACON_ROUND}) · Kern (erster Node, nicht einkreisen lassen)<br>
   <b>Multiplayer:</b> 3 Spieler alle gegen alle (15 Nodes) oder 2 gegen 2 (12 Nodes), 85 Punkte; Einkreisen trifft nur Gegner</div>
   <div style="height:28px"></div></div>`;
 }
@@ -318,6 +338,7 @@ function lobbyScreen() {
       ${clockPicker()}
       ${roundPicker()}
       ${advToggle()}
+      ${goalPicker()}
       <button class="btn primary" data-act="create">Raum erstellen</button>
       <p class="muted" style="text-align:center;margin:18px 0 4px">oder einem Raum beitreten</p>
       <label for="codein">Raumcode</label>
@@ -340,6 +361,7 @@ function mlobbyScreen() {
       ${clockPicker()}
       ${roundPicker()}
       ${advToggle()}
+      ${goalPicker()}
       <button class="btn primary" data-act="mcreate">Raum erstellen</button>
       <p class="muted" style="text-align:center;margin:18px 0 4px">oder einem Raum beitreten</p>
       <label for="codein">Raumcode</label>
@@ -378,7 +400,7 @@ function mlobbyScreen() {
       <div style="text-align:center"><p class="muted" style="margin:0">Raumcode</p><div class="code" style="margin:6px 0 4px">${esc(G.code)}</div>
       <p class="muted" style="margin:0 0 8px;font-size:14px">Die anderen öffnen Nodes, tippen auf «Multiplayer» und geben diesen Code ein.</p>
       ${G.net && G.net.shareUrl ? `<button class="btn small" data-act="share">Link teilen</button>` : ''}</div>
-      <p class="muted" style="margin:8px 0 0;font-size:13px;text-align:center">${s.mode === 'team' ? '2 gegen 2' : '3 Spieler, alle gegen alle'} · ${E.limitOf(s)} Runden · Uhr: ${s.clock ? clockLabel(s.clock.minutes) : 'Aus'} · ${E.TIERS[E.tierOf(s)]}</p>
+      <p class="muted" style="margin:8px 0 0;font-size:13px;text-align:center">${s.mode === 'team' ? '2 gegen 2' : '3 Spieler, alle gegen alle'} · ${E.limitOf(s)} Runden · Uhr: ${s.clock ? clockLabel(s.clock.minutes) : 'Aus'} · ${E.TIERS[E.tierOf(s)]} · ${E.GOALS[s.goal || 'classic']}</p>
       ${seats}
       ${host && bots ? `<div class="clockset"><span style="font-size:15px">Computer</span><div class="seg" role="radiogroup" aria-label="Spielstufe">${Object.entries(LEVELS).map(([k, v]) => `<button class="segbtn ${G.level === k ? 'on' : ''}" role="radio" aria-checked="${G.level === k}" data-act="level" data-l="${k}">${v}</button>`).join('')}</div></div>` : ''}
       ${foot}
@@ -400,8 +422,8 @@ function pickScreen() {
   const ready = n === 3 && (!adv || G.aura);
   const count = h => G.picks.filter(x => x === h).length;
   const settings = G.mode === 'single'
-    ? `<div class="clockset"><span style="font-size:15px">Computer</span><div class="seg" role="radiogroup" aria-label="Spielstufe">${Object.entries(LEVELS).map(([k, v]) => `<button class="segbtn ${G.level === k ? 'on' : ''}" role="radio" aria-checked="${G.level === k}" data-act="level" data-l="${k}">${v}</button>`).join('')}</div></div>` + clockPicker() + roundPicker() + advToggle()
-    : `<p class="muted" style="margin:0 0 12px">${E.limitOf(st)} Runden · Uhr: ${st && st.clock ? clockLabel(st.clock.minutes) : 'Aus'} · ${E.TIERS[tierNow()]}</p>`;
+    ? `<div class="clockset"><span style="font-size:15px">Computer</span><div class="seg" role="radiogroup" aria-label="Spielstufe">${Object.entries(LEVELS).map(([k, v]) => `<button class="segbtn ${G.level === k ? 'on' : ''}" role="radio" aria-checked="${G.level === k}" data-act="level" data-l="${k}">${v}</button>`).join('')}</div></div>` + clockPicker() + roundPicker() + advToggle() + goalPicker()
+    : `<p class="muted" style="margin:0 0 12px">${E.limitOf(st)} Runden · Uhr: ${st && st.clock ? clockLabel(st.clock.minutes) : 'Aus'} · ${E.TIERS[tierNow()]} · ${E.GOALS[goalNow()]}</p>`;
   const chosen = `<div class="chosen">${[0, 1, 2].map(k => G.picks[k] ? `<span class="slot on">${heroIcon(G.picks[k], 16)} ${E.HEROES[G.picks[k]].name}</span>` : '<span class="slot">frei</span>').join('')}${adv ? (G.aura ? `<span class="slot on aura">${E.AURAS[G.aura].name}</span>` : '<span class="slot aura">Aura</span>') : ''}</div>`;
   const auraList = adv ? `<h3 class="sect">Aura wählen</h3><div class="grid">${E.AURA_IDS.map(a => `<button class="cardbtn ${G.aura === a ? 'on' : ''}" data-act="aura" data-a="${a}" aria-pressed="${G.aura === a}"><div class="hn"><span class="badge aurab">${auraIcon}</span><h3 style="font-size:17px">${E.AURAS[a].name}</h3></div><div class="ab">${E.AURAS[a].desc}</div></button>`).join('')}</div>` : '';
   return `<div class="screen">
@@ -423,7 +445,7 @@ function pieceSvg(c, x, y) {
   const cc = col(c.p);
   if (c.k === 'wall') return `<rect x="${x - 12}" y="${y - 12}" width="24" height="24" rx="5" fill="${cc}" fill-opacity=".18" stroke="${cc}" stroke-width="2.5"/><path d="M${x - 8} ${y - 3}h16M${x - 8} ${y + 4}h16M${x - 2} ${y - 11}v8M${x + 3} ${y - 3}v7" stroke="${cc}" stroke-width="1.5"/>`;
   if (c.k === 'drone') return halo(c.p, x, y, 15) + `<polygon points="${x},${y - 10} ${x + 9},${y + 7} ${x - 9},${y + 7}" fill="${cc}"/><circle cx="${x}" cy="${y + 2}" r="2.2" fill="#0B1020"/>`;
-  if (c.k === 'node') return halo(c.p, x, y, 15) + shape(c.p, x, y, 8.5, cc);
+  if (c.k === 'node') return halo(c.p, x, y, 15) + shape(c.p, x, y, 8.5, cc) + (c.core ? `<circle cx="${x}" cy="${y}" r="12.5" fill="none" stroke="${cc}" stroke-width="2"/><circle cx="${x}" cy="${y}" r="3" fill="#0B1020"/>` : '');
   if (c.k === 'pylon') return halo(c.p, x, y, 21) + shape(c.p, x, y, 13, 'none', cc, 2.5) + shape(c.p, x, y, 7.5, cc);
   let o = halo(c.p, x, y, 27) + shape(c.p, x, y, 16, cc) + iconAt(c.h, x, y, 19);
   if (c.as) o += `<circle cx="${x + 15}" cy="${y + 15}" r="8" fill="#151C33" stroke="${cc}" stroke-width="1.5"/>` + iconAt(c.as, x + 15, y + 15, 10, cc);
@@ -445,15 +467,28 @@ function zones(s) {
   }
   return out;
 }
+function goalHint() {
+  const s = G.state;
+  if (!s || s.phase !== 'play') return '';
+  const out = [];
+  const me = G.me >= 0 ? E.teamOf(s, G.me) : null;
+  const others = [...new Set(s.alive.map((a, q) => (a && (me === null || E.teamOf(s, q) !== me) ? E.teamOf(s, q) : -1)).filter(t => t >= 0))];
+  const gapTxt = g => (g === Infinity ? 'blockiert' : g === 0 ? 'fertig' : `noch ${g}`);
+  if (s.anchors && me !== null) out.push(`Brücke: du ${gapTxt(E.bridgeGap(s, me))} · ${others.map(t => `${esc(teamName(t))} ${gapTxt(E.bridgeGap(s, t))}`).join(' · ')}`);
+  if (s.beacons && me !== null) out.push(`Leuchtfeuer: du ${E.beaconsHeld(s, me)}/${s.beacons.length} · ${others.map(t => `${esc(teamName(t))} ${E.beaconsHeld(s, t)}`).join(' · ')}${s.round < E.BEACON_ROUND ? ` (zählt ab Runde ${E.BEACON_ROUND})` : ` · ${E.beaconNeed(s)} zum Sieg`}`);
+  if (E.inEndphase(s)) out.push('<b>Endphase:</b> Geschlagene Figuren kommen nicht mehr zurück');
+  else if (s.round === E.limitOf(s) - E.ENDPHASE) out.push('Ab nächster Runde Endphase');
+  return out.length ? `<div class="zonehint muted">${out.join('<br>')}</div>` : '';
+}
 function zoneHint() {
   const s = G.state, zs = zones(s);
-  if (!zs.length || G.me < 0) return '';
+  if (!zs.length || G.me < 0) return goalHint();
   const mine = zs.filter(z => z.X === G.me || !E.foe(s, z.X, G.me)).reduce((a, z) => a + z.hits.length, 0);
   const lost = zs.reduce((a, z) => a + z.hits.filter(j => s.cells[j].p === G.me).length, 0);
   const parts = [];
   if (mine) parts.push(`<span style="color:${ME_COL}">Du kreist ${mine} ${mine === 1 ? 'Figur' : 'Figuren'} ein</span>`);
   if (lost) parts.push(`<span style="color:var(--hit)">${lost} ${lost === 1 ? 'deiner Figuren ist' : 'deiner Figuren sind'} eingekreist</span>`);
-  return parts.length ? `<div class="zonehint">${parts.join(' · ')} <span class="muted">(am Zugende)</span></div>` : '';
+  return (parts.length ? `<div class="zonehint">${parts.join(' · ')} <span class="muted">(am Zugende)</span></div>` : '') + goalHint();
 }
 function boardSvg() {
   const s = G.state;
@@ -468,6 +503,8 @@ function boardSvg() {
   zones(s).forEach(z => { z.comp.forEach(j => { const pt = B.points[j]; o += `<circle cx="${pt.x}" cy="${pt.y}" r="21" fill="${col(z.X)}" opacity=".16"/>`; }); });
   B.points.forEach((pt, i) => { if (!s.cells[i] || (FX.hide.get(i) || 0) > now) o += `<circle cx="${pt.x}" cy="${pt.y}" r="3.2" fill="#7F8FBF"/>`; });
   (s.mines || []).filter(m => G.me >= 0 && !E.foe(s, m.p, G.me) && !s.cells[m.at]).forEach(m => { const pt = B.points[m.at]; o += `<g aria-label="${m.p === G.me ? 'Deine Mine' : 'Mine deines Partners'}"><circle cx="${pt.x}" cy="${pt.y}" r="8" fill="none" stroke="${col(m.p)}" stroke-width="1.5" stroke-dasharray="2 2"/><path d="M${pt.x - 4} ${pt.y - 4}l8 8M${pt.x + 4} ${pt.y - 4}l-8 8" stroke="${col(m.p)}" stroke-width="1.6"/></g>`; });
+  if (s.anchors) Object.entries(s.anchors).forEach(([t, pts]) => { const q = s.team.indexOf(+t) >= 0 ? s.team.indexOf(+t) : +t; const cc = col(q); E.anchorZone(s, +t).filter(i => !pts.includes(i)).forEach(i => { const pt = B.points[i]; o += `<circle cx="${pt.x}" cy="${pt.y}" r="7" fill="${cc}" fill-opacity=".14"/>`; }); pts.forEach(i => { const pt = B.points[i]; o += `<g aria-label="Brückenziel"><rect x="${pt.x - 13}" y="${pt.y - 13}" width="26" height="26" rx="3" transform="rotate(45 ${pt.x} ${pt.y})" fill="${cc}" fill-opacity=".12" stroke="${cc}" stroke-width="1.8"/></g>`; }); });
+  if (s.beacons) s.beacons.forEach(i => { const pt = B.points[i]; o += `<g aria-label="Leuchtfeuer"><circle cx="${pt.x}" cy="${pt.y}" r="15" fill="#E8ECF8" fill-opacity=".07" stroke="#E8ECF8" stroke-width="1.6" stroke-dasharray="2 3"/>${[0, 60, 120, 180, 240, 300].map(d => { const r = d * Math.PI / 180; return `<line x1="${pt.x + Math.cos(r) * 17}" y1="${pt.y + Math.sin(r) * 17}" x2="${pt.x + Math.cos(r) * 21}" y2="${pt.y + Math.sin(r) * 21}" stroke="#E8ECF8" stroke-width="1.6" stroke-linecap="round"/>`; }).join('')}</g>`; });
   tgt.forEach(i => { const pt = B.points[i]; o += `<circle cx="${pt.x}" cy="${pt.y}" r="10" fill="none" stroke="${ME_COL}" stroke-width="2" stroke-dasharray="3 3"/>`; });
   s.cells.forEach((c, i) => {
     if (!c || (FX.hide.get(i) || 0) > now) return;
@@ -1047,12 +1084,12 @@ function panel() {
   }
   if (c.p !== G.me) {
     const what = c.k === 'hero' ? E.HEROES[c.h].name : E.UNIT_NAME[c.k];
-    if (c.k === 'wall' || c.k === 'drone') return `<div class="panel"><div class="ttl">${shapeIcon(c.p, 14)} ${what} ${whose(c.p)}</div><div class="hint">${c.k === 'wall' ? 'Zählt bis zum nächsten Zug ihres Besitzers zu seiner Kette und blockiert den Weg. Sie kann nicht zerstört werden.' : 'Zählt zur Kette des Gegners. Ein Treffer zerstört sie.'}</div></div>`;
+    if (c.k === 'wall' || c.k === 'drone') return `<div class="panel"><div class="ttl">${shapeIcon(c.p, 14)} ${what} ${whose(c.p)}</div><div class="hint">${c.k === 'wall' ? 'Blockiert bis zum nächsten Zug ihres Besitzers den Weg. Sie kann nicht zerstört werden und zählt nicht zur Kette.' : 'Blockiert den Weg, zählt aber nicht zur Kette. Ein Treffer zerstört sie.'}</div></div>`;
     return `<div class="panel"><div class="ttl">${shapeIcon(c.p, 14)} ${what} ${whose(c.p)}</div>${c.k === 'hero' ? `<div class="hint">${E.HEROES[c.h].n.name}: ${E.HEROES[c.h].n.desc}<br>${E.HEROES[c.h].s.name}: ${E.HEROES[c.h].s.desc}</div>` : ''}</div>`;
   }
   const pm = G.pending ? G.pending.mode : null;
   if (c.k === 'wall' || c.k === 'drone') {
-    return `<div class="panel"><div class="ttl">${E.UNIT_NAME[c.k]}</div><div class="hint">${c.k === 'wall' ? 'Deine Energiewand zählt bis zu deinem nächsten Zug zur Kette.' : 'Deine Drohne zählt zur Kette und kann nicht ziehen. Mit dem Schwarmangriff explodiert sie.'}</div></div>`;
+    return `<div class="panel"><div class="ttl">${E.UNIT_NAME[c.k]}</div><div class="hint">${c.k === 'wall' ? 'Deine Energiewand blockiert bis zu deinem nächsten Zug den Weg. Zur Kette zählt sie nicht.' : 'Deine Drohne blockiert den Weg und kann nicht ziehen. Zur Kette zählt sie nicht. Mit dem Schwarmangriff explodiert sie.'}</div></div>`;
   }
   if (c.k === 'node') {
     return `<div class="panel"><div class="ttl">Node</div><div class="hint">Tippe auf ein markiertes Feld, um zu ziehen.</div>
@@ -1111,7 +1148,7 @@ function gameScreen() {
   <div class="status ${G.err ? 'err' : ''}" role="status">${esc(G.msg || s.last || '')}</div>
   ${panel()}
   <div class="heroes">${heroes}</div>
-  <div class="foot"><button class="btn" data-act="end" ${isMyTurn() ? '' : 'disabled'}>Zug beenden</button></div>
+  ${s.phase === 'over' ? '<div class="foot" style="height:64px"></div>' : `<div class="foot"><button class="btn" data-act="end" ${isMyTurn() ? '' : 'disabled'}>Zug beenden</button></div>`}
   </div>`;
 }
 
@@ -1122,6 +1159,8 @@ function menuOverlay() {
   ${isMulti() && G.state && (G.me < 0 || !G.state.alive[G.me]) ? '<button class="btn" data-act="leave">Raum verlassen</button>' : `<button class="btn" data-act="resign">${G.mode === 'single' ? 'Partie beenden' : 'Aufgeben'}</button>`}
   <button class="btn primary" data-act="closeMenu">Weiterspielen</button></div></div>`;
 }
+// Nach der Partie: Endstellung in Ruhe ansehen
+const viewBar = () => `<div class="viewbar"><button class="btn primary" data-act="showResult">Ergebnis</button><button class="btn" data-act="leave">Zum Menü</button></div>`;
 function overOverlay() {
   const s = G.state;
   if (s.n > 2) return overMulti();
@@ -1131,8 +1170,12 @@ function overOverlay() {
     ? `Nach ${E.limitOf(s)} Runden zählen die Punkte (Node 1, Pylon 2, Held 3): Du ${E.score(s, G.me)} · ${names()[1 - G.me]} ${E.score(s, 1 - G.me)}.`
     : s.endReason === 'time'
     ? `Die Zeit ist abgelaufen. Punkte (Node 1, Pylon 2, Held 3): Du ${E.score(s, G.me)} · ${names()[1 - G.me]} ${E.score(s, 1 - G.me)}.`
+    : s.endReason === 'bridge' ? (win ? 'Deine Brücke steht: Anfang und Ende sind verbunden.' : 'Dein Gegner hat seine Brücke geschlagen.')
+    : s.endReason === 'beacon' ? (win ? 'Du hältst die Mehrheit der Leuchtfeuer.' : 'Dein Gegner hält die Mehrheit der Leuchtfeuer.')
+    : s.endReason === 'core' ? (win ? 'Der gegnerische Kern ist eingekreist.' : 'Dein Kern wurde eingekreist.')
     : win ? 'Alle gegnerischen Figuren sind vom Feld.' : s.alive[G.me] && s.last === 'Aufgegeben' ? 'Dein Gegner hat aufgegeben.' : 'Du hast keine Figuren mehr auf dem Feld.'} Runde ${s.round}.</p>
   ${G.mode === 'single' ? '<button class="btn primary" data-act="single">Nochmal</button>' : ''}
+  <button class="btn" data-act="viewBoard">Spielfeld ansehen</button>
   <button class="btn" data-act="leave">Zum Menü</button></div></div>`;
 }
 
@@ -1145,10 +1188,14 @@ function overMulti() {
   const title = draw ? 'Unentschieden' : win ? 'Sieg!' : G.me < 0 ? `${esc(teamName(s.winner))} gewinnt` : 'Niederlage';
   const why = s.endReason === 'rounds' ? `Nach ${E.limitOf(s)} Runden zählen die Punkte (Node 1, Pylon 2, Held 3)${s.mode === 'team' ? ' pro Team' : ''}: ${pts}.`
     : s.endReason === 'time' ? `Eine Uhr ist abgelaufen. Punkte${s.mode === 'team' ? ' pro Team' : ''}: ${pts}.`
+    : s.endReason === 'bridge' ? `${esc(teamName(s.winner))}: Die Brücke steht.`
+    : s.endReason === 'beacon' ? `${esc(teamName(s.winner))}: Mehrheit der Leuchtfeuer gehalten.`
+    : s.endReason === 'core' ? `Nur noch ${esc(teamName(s.winner))} hat einen Kern.`
     : win ? (s.mode === 'team' ? 'Euer Team hat alle Gegner vom Feld gefegt.' : 'Alle anderen sind ausgeschieden.')
     : draw ? 'Niemand ist übrig.' : `${esc(teamName(s.winner))} ${s.mode === 'team' ? 'gewinnen' : 'gewinnt'}.`;
   return `<div class="overlay"><div class="dialog"><h2 style="color:${win ? ME_COL : 'var(--text)'}">${title}</h2>
   <p class="muted" style="margin:0">${why} Runde ${s.round}.</p>
+  <button class="btn" data-act="viewBoard">Spielfeld ansehen</button>
   <button class="btn" data-act="leave">Zum Menü</button></div></div>`;
 }
 
@@ -1237,7 +1284,7 @@ function confirmPick() {
   const a = { t: 'pick', p: G.me, heroes: G.picks.slice() };
   if (tierNow() === 3) a.aura = G.aura;
   if (G.mode === 'single') {
-    let st = E.apply(G.state, { t: 'setup', p: 0, clock: G.clockMin, only: G.me, tier: G.tier, rounds: G.rounds });
+    let st = E.apply(G.state, { t: 'setup', p: 0, clock: G.clockMin, only: G.me, tier: G.tier, goal: G.goal, rounds: G.rounds });
     st = E.apply(st, a);
     G.state = E.apply(st, { t: 'pick', p: aiSeat(), heroes: pickHeroes(E.heroPool(st)), aura: G.tier === 3 ? pickAura() : undefined });
     G.mark = performance.now();
@@ -1259,6 +1306,7 @@ function onNetLog(log) {
   if (G.state && log.length < G.log.length) return;
   const fresh = log.length === G.log.length + 1;
   G.log = log; G.state = st;
+  if (st.phase !== 'over') G.viewBoard = false;
   if (isMulti()) {
     if (log.length && !st.seated) { setMsg('Das ist ein Duell-Raum. Tippe im Startbildschirm auf «Duell».', true); closeNet(); render(); return; }
     G.me = E.seatOf(st, G.myId);
@@ -1275,7 +1323,7 @@ function onNetLog(log) {
 }
 
 // ---------- Multiplayer: Platz nehmen und Computer des Gastgebers ----------
-const initAction = () => ({ t: 'init', p: 0, n: G.mn, id: G.myId, name: G.name, clock: G.clockMin, tier: G.tier, rounds: G.rounds });
+const initAction = () => ({ t: 'init', p: 0, n: G.mn, id: G.myId, name: G.name, clock: G.clockMin, tier: G.tier, goal: G.goal, rounds: G.rounds });
 function maybeSit() {
   const s = G.state;
   if (!isMulti() || !G.net || G.me >= 0 || !s || !s.seated || s.phase !== 'pick' || !s.seated.includes(null)) return;
@@ -1387,7 +1435,7 @@ function wsNet(code, multi = false) {
         }
         if (m.seat < 0) { setMsg('Dieser Raum ist schon voll', true); G.code = ''; closed = true; ws.close(); render(); return; }
         G.me = m.seat; onNetLog(m.log);
-        if (m.seat === 0 && m.log.length === 0) ws.send(JSON.stringify({ type: 'act', action: { t: 'setup', p: 0, clock: G.clockMin, tier: G.tier, rounds: G.rounds } }));
+        if (m.seat === 0 && m.log.length === 0) ws.send(JSON.stringify({ type: 'act', action: { t: 'setup', p: 0, clock: G.clockMin, tier: G.tier, goal: G.goal, rounds: G.rounds } }));
       } else if (m.type === 'log') onNetLog(m.log);
       else if (m.type === 'presence') { if (multi) { G.onlineSeats = new Set(m.seats); render(); } else onNetPeers(m.seats.filter(x => x !== G.me).length); }
       else if (m.type === 'error') { setMsg(m.msg, true); render(); }
@@ -1431,7 +1479,7 @@ async function roomNet(code, seat, multi = false) {
   r.presence(multi ? { app: 'nodes', id: G.myId } : { app: 'nodes', seat });
   if (multi) G.onlineIds = new Set();
   if (seat === 0 && G.log.length === 0) {
-    const a = multi ? initAction() : { t: 'setup', p: 0, clock: G.clockMin, tier: G.tier, rounds: G.rounds };
+    const a = multi ? initAction() : { t: 'setup', p: 0, clock: G.clockMin, tier: G.tier, goal: G.goal, rounds: G.rounds };
     onNetLog([a]);
     r.emit('act', { i: 0, a }).catch(() => {});
   }
@@ -1468,9 +1516,12 @@ app.addEventListener('click', e => {
     case 'rules': G.ruleBack = 'start'; G.screen = 'rules'; render(); window.scrollTo(0, 0); break;
     case 'rulesIngame': G.menu = false; G.ruleBack = 'game'; G.screen = 'rules'; render(); window.scrollTo(0, 0); break;
     case 'back': G.screen = G.ruleBack; render(); break;
-    case 'leave': closeNet(); G.mode = null; G.state = null; G.me = 0; G.screen = 'start'; G.menu = false; setMsg(''); render(); break;
+    case 'viewBoard': G.viewBoard = true; G.sel = null; render(); break;
+    case 'showResult': G.viewBoard = false; render(); break;
+    case 'leave': G.viewBoard = false; closeNet(); G.mode = null; G.state = null; G.me = 0; G.screen = 'start'; G.menu = false; setMsg(''); render(); break;
     case 'create': startDuel(newCode(), 0); break;
     case 'multi': closeNet(); G.mode = 'multi'; G.state = null; G.me = -1; G.screen = 'mlobby'; G.code = ''; setMsg(''); render(); break;
+    case 'goal': if (el.dataset.g in E.GOALS) G.goal = el.dataset.g; saveSettings(); render(); break;
     case 'tier': G.tier = [1, 2, 3].includes(+el.dataset.t) ? +el.dataset.t : 1; if (G.tier !== 3) G.aura = null; G.picks = G.picks.filter(h => poolNow().includes(h)); saveSettings(); render(); break;
     case 'mmode': G.mn = +el.dataset.n === 4 ? 4 : 3; saveSettings(); render(); break;
     case 'mcreate': startMulti(newCode(), true); break;
