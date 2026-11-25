@@ -158,6 +158,28 @@ function render() {
   syncFx();
 }
 
+// ---------- App installieren (nur auf der Cloudflare-Seite, nicht im Chat) ----------
+const isStandalone = () => (window.matchMedia && matchMedia('(display-mode: standalone)').matches) || navigator.standalone === true;
+const isIOS = () => /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const canInstall = () => !!document.querySelector('link[rel="manifest"]') && !isStandalone() && !G.installed ;
+addEventListener('beforeinstallprompt', e => { e.preventDefault(); G.installEvt = e; if (G.screen === 'start') render(); });
+addEventListener('appinstalled', () => { G.installed = true; G.installEvt = null; G.installHelp = false; render(); });
+function installHelp() {
+  const ios = isIOS();
+  return `<div class="overlay"><div class="dialog"><h2>App installieren</h2>
+  ${ios ? `<ol class="muted" style="margin:0;padding-left:20px;line-height:1.6;text-align:left"><li>Öffne diese Seite in <b>Safari</b>.</li><li>Tippe unten auf das <b>Teilen</b>-Symbol (Quadrat mit Pfeil nach oben).</li><li>Wähle <b>«Zum Home-Bildschirm»</b> und dann <b>«Hinzufügen»</b>.</li></ol>`
+    : `<ol class="muted" style="margin:0;padding-left:20px;line-height:1.6;text-align:left"><li><b>Android (Chrome):</b> Menü ⋮ oben rechts, dann <b>«App installieren»</b> bzw. <b>«Zum Startbildschirm hinzufügen»</b>.</li><li><b>Computer (Chrome, Edge):</b> Installieren-Symbol rechts in der Adresszeile.</li></ol>`}
+  <p class="muted" style="margin:0">Danach startet Nodes wie eine App, im Vollbild. Singleplayer geht auch ohne Internet.</p>
+  <button class="btn" data-act="installClose">Schliessen</button></div></div>`;
+}
+async function installApp() {
+  if (G.installEvt) {
+    const e = G.installEvt; G.installEvt = null;
+    try { e.prompt(); const r = await e.userChoice; if (r && r.outcome === 'accepted') G.installed = true; } catch {}
+    render(); return;
+  }
+  G.installHelp = true; render();
+}
 function startScreen() {
   return `<div class="screen start">
   <div class="logo">${emblem(160)}<h1>NODES</h1></div>
@@ -166,7 +188,8 @@ function startScreen() {
     <button class="btn" data-act="duel">Duell</button>
     <button class="btn" data-act="multi">Multiplayer</button>
     <button class="btn" data-act="rules" style="border-color:transparent">Regeln</button>
-  </div></div>`;
+    ${canInstall() ? `<button class="btn small" data-act="install" style="align-self:center;margin-top:6px"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-3px;margin-right:6px"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>App installieren</button>` : ''}
+  </div></div>${G.installHelp ? installHelp() : ''}`;
 }
 
 function heroCard(h, extra = '') {
@@ -1516,6 +1539,8 @@ app.addEventListener('click', e => {
     case 'rules': G.ruleBack = 'start'; G.screen = 'rules'; render(); window.scrollTo(0, 0); break;
     case 'rulesIngame': G.menu = false; G.ruleBack = 'game'; G.screen = 'rules'; render(); window.scrollTo(0, 0); break;
     case 'back': G.screen = G.ruleBack; render(); break;
+    case 'install': installApp(); break;
+    case 'installClose': G.installHelp = false; render(); break;
     case 'viewBoard': G.viewBoard = true; G.sel = null; render(); break;
     case 'showResult': G.viewBoard = false; render(); break;
     case 'leave': G.viewBoard = false; closeNet(); G.mode = null; G.state = null; G.me = 0; G.screen = 'start'; G.menu = false; setMsg(''); render(); break;
