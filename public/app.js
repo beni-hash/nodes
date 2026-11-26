@@ -96,6 +96,7 @@ function nameOf(p) {
   const s = G.state;
   if (p === G.me) return 'Du';
   if (G.mode === 'single') return 'Computer';
+  if (G.mode === 'tutorial') return 'Blau';
   if (isMulti() && s && s.names) {
     if (E.isBot(s, p)) { const all = s.seated.filter(x => x === 'bot').length; return all > 1 ? `Computer ${s.seated.slice(0, p + 1).filter(x => x === 'bot').length}` : 'Computer'; }
     return s.names[p] || `Spieler ${p + 1}`;
@@ -124,13 +125,13 @@ function emblem(size) {
   return o + '</svg>';
 }
 
-const TIER_TXT = { 1: '5 Helden: Titan, Sniper, Interceptor, Phantom, Hacker. Ideal zum Lernen.', 2: 'Alle 10 Helden.', 3: 'Alle 10 Helden, dazu wählt jeder eine Aura mit Dauerbonus.' };
+const TIER_TXT = { 1: '5 Helden. Zum Lernen.', 2: 'Alle 10 Helden.', 3: '10 Helden und 1 Aura.' };
 const advToggle = () => `<div class="clockset"><span style="font-size:15px"><b>Spielstufe</b></span><div class="seg" role="radiogroup" aria-label="Spielstufe">${[1, 2, 3].map(t => `<button class="segbtn ${G.tier === t ? 'on' : ''}" role="radio" aria-checked="${G.tier === t}" data-act="tier" data-t="${t}">${E.TIERS[t]}</button>`).join('')}</div><div class="muted" style="font-size:13px">${TIER_TXT[G.tier]}</div></div>`;
 const GOAL_TXT = {
-  classic: 'Gewinnt, wer die anderen vom Feld fegt, sonst zählen am Schluss die Punkte.',
-  bridge: 'Verbinde deine zwei markierten Punkte mit einer durchgehenden Kette. Wer das zuerst schafft, gewinnt.',
-  beacon: `Halte die Mehrheit der Leuchtfeuer zu Beginn deines Zuges (ab Runde ${E.BEACON_ROUND}).`,
-  core: 'Dein erster Node ist dein Kern. Wird er eingekreist, hast du verloren.',
+  classic: 'Alle Gegner vom Feld fegen, sonst zählen die Punkte.',
+  bridge: 'Verbinde deine zwei Rauten mit einer Kette.',
+  beacon: `Halte ab Runde ${E.BEACON_ROUND} die Mehrheit der Leuchtfeuer.`,
+  core: 'Dein erster Node ist dein Kern. Fällt er, verlierst du.',
 };
 const goalPicker = () => `<div class="clockset"><span style="font-size:15px"><b>Spielziel</b></span><div class="seg seg4" role="radiogroup" aria-label="Spielziel">${Object.entries(E.GOALS).map(([k, v]) => `<button class="segbtn ${G.goal === k ? 'on' : ''}" role="radio" aria-checked="${G.goal === k}" data-act="goal" data-g="${k}">${v}</button>`).join('')}</div><div class="muted" style="font-size:13px">${GOAL_TXT[G.goal]}</div></div>`;
 const goalNow = () => (G.mode === 'single' ? G.goal : (G.state && G.state.goal) || 'classic');
@@ -158,6 +159,103 @@ function render() {
   syncFx();
 }
 
+// ---------- Tutorial: eine vorgegebene Partie im Grundspiel ----------
+// Du spielst Orange und darfst nur die verlangte Aktion ausführen. Blau spielt seine Züge selbst.
+const TUT_HEROES = ['titan', 'sniper', 'interceptor'];
+const TUT = [
+  { info: true, title: 'Willkommen bei Nodes',
+    text: 'Du spielst <b style="color:' + ME_COL + '">Orange</b>, dein Gegner <b style="color:' + OPP_COL + '">Blau</b>. Pro Zug hast du <b>2 Aktionen</b>. Tippe immer auf den weissen Ring.' },
+  { title: 'Ersten Node legen', a: { t: 'place', at: 24 },
+    text: 'Der erste Node kommt an den <b>Rand</b>.',
+    done: 'Nodes kommen aus deinem <b>Pot</b> (oben links).' },
+  { title: 'Anbauen', a: { t: 'place', at: 25 },
+    text: 'Jeder weitere Node muss über eine <b>Linie</b> an eine eigene Figur grenzen.',
+    done: 'Deine 2 Aktionen sind verbraucht.' },
+  { blue: { t: 'place', at: 16 }, say: 'Blau legt seinen ersten Node an den Rand …' },
+  { blue: { t: 'place', at: 17 }, say: '… und baut an.' },
+  { title: 'Weiterbauen', a: { t: 'place', at: 26 },
+    text: 'Runde 2. Lege einen Node.' },
+  { title: 'Stapeln', a: { t: 'stack', at: 26 },
+    text: 'Tippe auf den neuen Node, dann auf <b>«Stapeln»</b>. Zwei Nodes ergeben einen <b>Pylon</b>.',
+    done: 'Pylone erkennst du am Ring.' },
+  { blue: { t: 'place', at: 18 }, say: 'Blau baut weiter …' },
+  { blue: { t: 'place', at: 10 }, say: '… Richtung Mitte.' },
+  { title: 'Held rufen', a: { t: 'hero', at: 26, h: 'titan' },
+    text: 'Ab Runde 3 wird ein Pylon zum <b>Helden</b>. Tippe auf den Pylon und wähle den <b>Titan</b>.',
+    done: 'Der Titan zerstört mit der <b>Plasmaklinge</b> benachbarte Gegner.' },
+  { title: 'Node legen', a: { t: 'place', at: 33 },
+    text: 'Lege einen Node.' },
+  { blue: { t: 'place', at: 11 }, say: 'Blau baut oben weiter …' },
+  { blue: { t: 'place', at: 4 }, say: '… und noch einmal.' },
+  { title: 'Fähigkeit einsetzen', a: { t: 'ability', from: 26, kind: 'n', target: 18 },
+    text: 'Tippe auf den <b>Titan</b>, wähle <b>«Plasmaklinge»</b>, dann den blauen Node.',
+    done: 'Zerstörte Figuren kommen auf den <b>Stapel</b> und kehren nach einer Runde in den Pot zurück. Die zwei blauen Nodes in der Ecke sind jetzt fast abgeschnitten.' },
+  { title: 'Ziehen', a: { t: 'move', from: 33, to: 34 },
+    text: 'Ein Node zieht 1 Feld, ein Pylon bis 3. Tippe auf den Node, dann auf das Ziel.' },
+  { blue: { t: 'place', at: 5 }, say: 'Blau baut oben aus …' },
+  { blue: { t: 'place', at: 12 }, say: '… und übersieht die Gefahr in der Ecke.' },
+  { title: 'Einkreisen', a: { t: 'place', at: 18 },
+    text: 'Schneidet deine Kette aus <b>Nodes und Pylonen</b> ein Gebiet von höchstens ' + E.ENC_MAX + ' Punkten ab, werden die Gegner darin getroffen. Schliesse die Lücke.',
+    done: 'Die <b>orange Fläche</b> zeigt, was am Zugende eingekreist wird.' },
+  { title: 'Zug beenden', a: { t: 'end' },
+    text: 'Eingekreist wird <b>am Zugende</b>. Tippe auf <b>«Zug beenden»</b>.',
+    done: 'Getroffen! Nodes verschwinden, Pylone und Helden werden zu Nodes.' },
+  { info: true, final: true, title: 'Geschafft!',
+    text: 'Das sind die Grundlagen. Du gewinnst, wenn der Gegner keine Figur mehr hat, sonst nach dem Rundenlimit mit mehr Punkten (Node 1, Pylon 2, Held 3). Mehr in den Regeln.' },
+];
+function startTutorial() {
+  closeNet();
+  let s = E.newGame(2);
+  s = E.apply(s, { t: 'setup', p: 0, clock: 0, tier: 1, goal: 'classic', rounds: 30 });
+  s = E.apply(s, { t: 'pick', p: 0, heroes: TUT_HEROES });
+  s = E.apply(s, { t: 'pick', p: 1, heroes: ['titan', 'sniper', 'hacker'] });
+  Object.assign(G, { mode: 'tutorial', me: 0, log: [], picks: [], aura: null, sel: null, pending: null, screen: 'game', menu: false, viewBoard: false, tut: { i: 0, lastDone: '', busy: false } });
+  setState(s, false); setMsg(''); render();
+}
+const tutStep = () => TUT[G.tut.i];
+// Stimmt die Aktion genau mit der Vorgabe überein?
+const tutMatch = (a, e) => Object.keys(e).every(k => a[k] === e[k]);
+function tutAdvance() {
+  G.tut.i = Math.min(G.tut.i + 1, TUT.length - 1);
+  const st = tutStep();
+  if (st.blue) {
+    G.tut.busy = true; render();
+    setTimeout(() => {
+      try { setState(E.apply(G.state, { ...st.blue, p: 1 })); } catch (e) { setMsg('Tutorial-Fehler: ' + e.message, true); }
+      G.tut.busy = false; tutAdvance();
+    }, 1100);
+    return;
+  }
+  render(); window.scrollTo(0, 0);
+}
+function tutAct(a, next) {
+  const st = tutStep();
+  if (G.tut.busy || !st.a) { setMsg(st.info ? 'Tippe oben auf «Weiter».' : 'Warte kurz, Blau ist am Zug.'); return render(); }
+  if (!tutMatch(a, st.a)) { setMsg('Nur die angesagte Aktion ist möglich. Achte auf den weissen Ring.', true); G.sel = null; G.pending = null; return render(); }
+  G.sel = null; G.pending = null; setMsg('');
+  G.log.push(a); setState(next);
+  G.tut.lastDone = st.done || '';
+  tutAdvance();
+}
+function coachBox() {
+  const t = G.tut, st = tutStep();
+  if (st.blue) return `<div class="coach"><div class="ct"><b style="color:${OPP_COL}">Blau ist am Zug</b></div><div class="cx pulse">${st.say}</div></div>`;
+  const n = TUT.filter(x => !x.blue).length, k = TUT.slice(0, t.i + 1).filter(x => !x.blue).length;
+  const prev = t.lastDone ? `<div class="ok">✓ ${t.lastDone}</div>` : '';
+  const btns = st.final
+    ? `<button class="btn small primary" data-act="tutPlay">Gegen den Computer spielen</button><button class="btn small" data-act="leave">Zum Menü</button>`
+    : (st.info ? `<button class="btn small primary" data-act="tutNext">Weiter</button>` : '') + `<button class="btn small" data-act="leave">Beenden</button>`;
+  return `<div class="coach"><div class="ct"><span class="muted">${k}/${n}</span> <b>${st.title}</b></div>${prev}<div class="cx">${st.text}</div><div class="cb">${btns}</div></div>`;
+}
+function tutHL() {
+  if (G.mode !== 'tutorial' || G.tut.busy) return [];
+  const e = tutStep().a;
+  if (!e) return [];
+  const picked = G.sel === e.from || (G.pending && G.pending.from === e.from);
+  return [e.at, e.from, e.target, e.to].filter(x => x !== undefined && ((x !== e.to && x !== e.target) || picked));
+}
+function tutNext() { G.tut.lastDone = ''; tutAdvance(); }
+
 // ---------- App installieren (nur auf der Cloudflare-Seite, nicht im Chat) ----------
 const isStandalone = () => (window.matchMedia && matchMedia('(display-mode: standalone)').matches) || navigator.standalone === true;
 const isIOS = () => /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
@@ -169,7 +267,7 @@ function installHelp() {
   return `<div class="overlay"><div class="dialog"><h2>App installieren</h2>
   ${ios ? `<ol class="muted" style="margin:0;padding-left:20px;line-height:1.6;text-align:left"><li>Öffne diese Seite in <b>Safari</b>.</li><li>Tippe unten auf das <b>Teilen</b>-Symbol (Quadrat mit Pfeil nach oben).</li><li>Wähle <b>«Zum Home-Bildschirm»</b> und dann <b>«Hinzufügen»</b>.</li></ol>`
     : `<ol class="muted" style="margin:0;padding-left:20px;line-height:1.6;text-align:left"><li><b>Android (Chrome):</b> Menü ⋮ oben rechts, dann <b>«App installieren»</b> bzw. <b>«Zum Startbildschirm hinzufügen»</b>.</li><li><b>Computer (Chrome, Edge):</b> Installieren-Symbol rechts in der Adresszeile.</li></ol>`}
-  <p class="muted" style="margin:0">Danach startet Nodes wie eine App, im Vollbild. Singleplayer geht auch ohne Internet.</p>
+  <p class="muted" style="margin:0">Nodes startet dann im Vollbild. Singleplayer geht auch offline.</p>
   <button class="btn" data-act="installClose">Schliessen</button></div></div>`;
 }
 async function installApp() {
@@ -187,6 +285,7 @@ function startScreen() {
     <button class="btn primary" data-act="single">Singleplayer</button>
     <button class="btn" data-act="duel">Duell</button>
     <button class="btn" data-act="multi">Multiplayer</button>
+    <button class="btn" data-act="tutorial">Tutorial</button>
     <button class="btn" data-act="rules" style="border-color:transparent">Regeln</button>
     ${canInstall() ? `<button class="btn small" data-act="install" style="align-self:center;margin-top:6px"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-3px;margin-right:6px"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>App installieren</button>` : ''}
   </div></div>${G.installHelp ? installHelp() : ''}`;
@@ -207,7 +306,7 @@ function rulesScreen() {
   const heroes = E.HERO_IDS.map(h => {
     const H = E.HEROES[h];
     return `<div class="hcard"><div class="hn"><span class="badge">${heroIcon(h, 20)}</span><h3 style="font-size:18px;margin:0;color:var(--text)">${H.name}</h3><span class="role">${H.role}</span></div>
-    <div class="ab"><b>Bewegung:</b> ${H.move || 'Zieht 1 Feld weit entlang einer Linie.'}</div>
+    <div class="ab"><b>Bewegung:</b> ${H.move || '1 Feld.'}</div>
     ${H.passive ? `<div class="ab"><b>Passiv:</b> ${H.passive.replace(/^[^:]+: /, '')}</div>` : ''}
     <div class="ab"><b>${H.n.name}</b> (${cost(h, 'n')}): ${H.n.desc}</div>
     <div class="ab"><b>${H.s.name}</b> (${cost(h, 's')}): ${H.s.desc}</div></div>`;
@@ -215,130 +314,117 @@ function rulesScreen() {
   return `<div class="screen rules">
   <div class="top"><button class="icon" data-act="back" aria-label="Zurück">${backIcon}</button><h2>Spielregeln</h2></div>
 
-  <div class="box"><b>Kurz gesagt:</b> Zwei Spieler (im Multiplayer drei oder vier) legen abwechselnd Nodes auf ein Netz aus Punkten. Aus Nodes werden Pylone, aus Pylonen Helden mit besonderen Fähigkeiten. Wer mit seinen Ketten gegnerische Figuren einkreist oder sie mit Helden zerstört, gewinnt.</div>
+  <div class="box"><b>Kurz gesagt:</b> Lege Nodes, staple sie zu Pylonen, rufe Helden und kreise gegnerische Figuren ein.</div>
 
-  <h3>1 · Ziel des Spiels</h3>
-  <p>Entferne alle Figuren deines Gegners vom Spielfeld. Sobald ein Spieler keine Nodes, keine Pylone und keine Helden mehr auf dem Feld hat, verliert er die Partie, auch wenn er noch Nodes im Pot hat.</p>
+  <h3>1 · Ziel</h3>
+  <p>Fege alle gegnerischen Figuren vom Feld. Wer keine Figur mehr auf dem Feld hat, verliert, auch mit vollem Pot.</p>
 
-  <h3>2 · Spielmaterial</h3>
-  <p><b>Das Spielfeld</b> ist ein sechseckiges Netz aus 55 Punkten. Die Linien zeigen, welche Punkte benachbart sind. In der Mitte ist das Netz dicht (bis zu 6 Nachbarn), am Rand dünner (meist 4 Nachbarn). Figuren stehen immer auf Punkten und bewegen sich entlang der Linien.</p>
-  <p><b>Die Figuren.</b> Deine Figuren sind orange, die deines Gegners blau. Es gibt drei Arten:</p>
+  <h3>2 · Material</h3>
+  <p><b>Spielfeld:</b> 55 Punkte, verbunden durch Linien. Figuren stehen auf Punkten und ziehen entlang der Linien.</p>
   <div class="legend">
-    <div class="lg">${mini('node')}<div><b>Node</b><br>Die Grundfigur. Jeder Spieler hat 15 Nodes, wer nicht beginnt 16.</div></div>
-    <div class="lg">${mini('pylon')}<div><b>Pylon</b><br>Zwei aufeinandergestapelte Nodes. Stärker und schneller.</div></div>
-    <div class="lg">${mini('hero', 'titan')}<div><b>Held</b><br>Ein verwandelter Pylon (2 Nodes) mit zwei Fähigkeiten.</div></div>
-    <div class="lg">${opp}<div><b>Gegnerische Figuren</b><br>sind blau.</div></div>
+    <div class="lg">${mini('node')}<div><b>Node</b><br>Grundfigur. 15 pro Spieler.</div></div>
+    <div class="lg">${mini('pylon')}<div><b>Pylon</b><br>Zwei gestapelte Nodes.</div></div>
+    <div class="lg">${mini('hero', 'titan')}<div><b>Held</b><br>Verwandelter Pylon mit zwei Fähigkeiten.</div></div>
+    <div class="lg">${opp}<div><b>Gegner</b><br>Blaue Figuren.</div></div>
   </div>
-  <p><b>Pot und Stapel.</b> Der <b>Pot</b> ist dein Vorrat: Zu Beginn liegen dort alle 15 Nodes. Wird eine deiner Figuren entfernt, kommen ihre Nodes zuerst auf den <b>Stapel</b> und nach einer Pause zurück in den Pot. Nodes gehen also nie verloren. Beide Zahlen siehst du oben neben deinem Namen.</p>
+  <p><b>Pot:</b> dein Vorrat an Nodes. <b>Stapel:</b> geschlagene Nodes, die später in den Pot zurückkehren. Beide Zahlen stehen oben bei deinem Namen.</p>
 
-  <h3>3 · Vorbereitung: Helden wählen</h3>
-  <p>Vor der Partie wählt jeder Spieler geheim <b>3 Helden aus 10</b>. Derselbe Held darf <b>höchstens zweimal</b> in deinem Team sein, und beide Spieler dürfen dieselben Helden wählen. Jede Wahl ist ein Heldenplatz: Du kannst also höchstens 3 Helden gleichzeitig auf dem Feld haben.</p>
-  <p>Vor der Partie wählst du die <b>Spielstufe</b>:</p>
-  <ul><li><b>Grundspiel:</b> nur die ersten 5 Helden (Titan, Sniper, Interceptor, Phantom, Hacker). Ideal zum Lernen.</li>
+  <h3>3 · Vorbereitung</h3>
+  <p>Jeder wählt <b>3 Helden</b>, denselben höchstens zweimal. Jede Wahl ist ein Heldenplatz: Höchstens 3 Helden stehen gleichzeitig auf dem Feld.</p>
+  <ul><li><b>Grundspiel:</b> 5 Helden (Titan, Sniper, Interceptor, Phantom, Hacker).</li>
   <li><b>Erweitert:</b> alle 10 Helden.</li>
-  <li><b>Profi:</b> alle 10 Helden, und jeder wählt zusätzlich eine <b>Aura</b> (siehe Kapitel 12).</li></ul>
+  <li><b>Profi:</b> 10 Helden und 1 Aura (Kapitel 12).</li></ul>
+  <p>Dazu wählst du das <b>Spielziel</b> (Kapitel 16).</p>
 
-  <h3>4 · Ablauf einer Runde</h3>
-  <p>Die Spieler sind abwechselnd am Zug. Im Singleplayer entscheidet das Los, wer beginnt. Im Duell beginnt, wer den Raum erstellt hat. In deinem Zug hast du <b>2 Aktionen</b> (die zwei Punkte oben in der Mitte). <b>Ausgleich:</b> Wer nicht beginnt, startet mit <b>16 statt 15 Nodes</b> im Pot. Du darfst sie beliebig kombinieren, auch zweimal dieselbe Aktion. Sind beide Aktionen verbraucht, endet dein Zug automatisch. Du kannst ihn auch früher mit «Zug beenden» abschliessen.</p>
+  <h3>4 · Spielablauf</h3>
+  <p>Die Spieler sind abwechselnd am Zug. Pro Zug hast du <b>2 Aktionen</b>, frei kombinierbar. Danach endet dein Zug, mit «Zug beenden» auch früher.</p>
+  <p>Wer nicht beginnt, erhält <b>1 Node mehr</b> (16).</p>
 
-  <h3>5 · Die Aktionen</h3>
-  <p><b>Legen (1 Aktion).</b> Nimm einen Node aus deinem Pot und lege ihn auf einen freien Punkt. Deinen <b>ersten Node</b> musst du an den <b>Rand</b> des Spielfelds legen. Danach darfst du nur noch auf Punkte legen, die durch eine Linie mit einer deiner Figuren verbunden sind. Erlaubte Punkte sind gestrichelt markiert.</p>
-  <p><b>Stapeln (1 Aktion).</b> Lege einen Node aus dem Pot auf einen deiner Nodes. Daraus wird ein <b>Pylon</b>.</p>
-  <p><b>Held rufen (1 Aktion, ab Runde ${E.HERO_ROUND}).</b> Verwandle einen deiner Pylone in einen Helden, dessen Heldenplatz gerade frei ist. Ein Held, der gerade zerstört wurde, muss eine Runde warten.</p>
-  <p><b>Ziehen (1 Aktion).</b> Bewege eine Figur entlang der Linien auf einen freien Punkt:</p>
-  <ul><li>Node: 1 Feld weit</li><li>Pylon: bis zu 3 Felder weit, nur über freie Punkte</li><li>Held: 1 Feld weit. Der Interceptor fliegt bis zu 3 Felder, auch über Figuren hinweg. Das Phantom springt auf ein beliebiges freies Feld.</li></ul>
-  <p>Ausser Interceptor und Phantom springt keine Figur über andere. Energiewände und Drohnen können nicht ziehen.</p>
-  <p><b>Fähigkeit einsetzen (1 oder 2 Aktionen).</b> Jeder Held hat zwei Fähigkeiten. Was sie kosten, steht auf dem Knopf. Fähigkeiten mit 2 Aktionen gehen nur, wenn du noch beide Aktionen hast.</p>
-  <div class="box"><b>So bedienst du das Spiel:</b> Tippe auf einen markierten Punkt, um einen Node zu legen. Tippe auf eine eigene Figur, um sie auszuwählen: Dann siehst du, wohin sie ziehen kann, und unten erscheinen Knöpfe zum Stapeln, für Helden und für Fähigkeiten. Rot markierte Figuren sind mögliche Ziele eines Angriffs. Manche Fähigkeiten brauchen zwei oder drei Ziele nacheinander, der Hinweis unter dem Spielfeld sagt dir, was als Nächstes kommt.</div>
+  <h3>5 · Aktionen</h3>
+  <p>Jede Aktion kostet 1 Aktion, starke Fähigkeiten 2.</p>
+  <ul><li><b>Legen:</b> Node aus dem Pot auf einen freien Punkt. Der erste an den Rand, jeder weitere über eine Linie neben eine eigene Figur.</li>
+  <li><b>Stapeln:</b> Node aus dem Pot auf einen eigenen Node. Er wird zum Pylon.</li>
+  <li><b>Held rufen</b> (ab Runde ${E.HERO_ROUND}): Pylon wird zum Helden. Ein zerstörter Held wartet eine Runde.</li>
+  <li><b>Ziehen:</b> Node 1 Feld, Pylon bis 3 Felder über freie Punkte, Held 1 Feld (Ausnahmen siehe Helden).</li>
+  <li><b>Fähigkeit:</b> 1 oder 2 Aktionen, steht auf dem Knopf.</li></ul>
+  <div class="box"><b>Bedienung:</b> Markierten Punkt antippen, um zu legen. Eigene Figur antippen, um sie zu wählen: Ziele werden markiert, Knöpfe erscheinen unten. Rot markiert sind Angriffsziele.</div>
 
-  <h3>6 · Die Aufbauphase</h3>
-  <p>In <b>Runde 1 und 2</b> gibt es noch keine Helden und kein Einkreisen. Beide Spieler können sich in Ruhe ausbreiten. Ab Runde ${E.HERO_ROUND} gelten alle Regeln.</p>
+  <h3>6 · Aufbauphase</h3>
+  <p>In Runde 1 und 2 gibt es keine Helden und kein Einkreisen.</p>
 
   <h3>7 · Einkreisen</h3>
-  <p>Deine <b>Nodes und Pylone</b> bilden zusammen Ketten. Helden, Energiewände und Drohnen gehören nicht zur Kette. Am Ende jedes Zuges wird geprüft, ob eine Kette zusammen mit dem Spielfeldrand ein Gebiet vom Rest des Feldes abschneidet.</p>
-  <p><b>Vorschau:</b> Gebiete, die am Zugende eingekreist werden, sind auf dem Feld schwach in der Farbe des Einkreisenden eingefärbt. Unter dem Feld steht, wie viele Figuren betroffen sind. So siehst du vor dem Zugende, was passieren wird, und kannst noch reagieren.</p>
-  <p><b>Es zählen nur die gezeichneten Linien.</b> Ein Gebiet ist abgeschlossen, wenn jede Linie, die aus dem Gebiet hinausführt, auf eine Figur deiner Kette trifft. Wo zwischen zwei Punkten keine Linie gezeichnet ist, gibt es auch keinen Weg hinaus. Die Kette selbst muss nicht zusammenhängen, und freie Punkte im Gebiet retten nichts.</p>
-  <p>Ein abgeschlossenes Gebiet ist <b>eingekreist</b>, wenn es <b>höchstens ${E.ENC_MAX} Punkte</b> umfasst. Gezählt werden die Figuren darin und die freien Punkte zusammen. Grössere Gebiete gelten nicht als eingekreist, auch wenn sie abgeschnitten sind.</p>
-  <div class="box"><b>Genau gesagt:</b> Das Spielfeld ist ein Graph aus Punkten und Linien. K sind die Punkte mit deinen Nodes und Pylonen (im 2 gegen 2 auch die deines Partners). Entfernt man K, zerfällt der Rest in zusammenhängende Gebiete. Ein Gebiet Z ist eingekreist, wenn |Z| ≤ ${E.ENC_MAX}. Springende Helden ändern daran nichts. Die Grenze muss von einem Spieler (bzw. einem Team) stammen: Orange und Violett zusammen kreisen nichts ein.</div>
-  <p><b>Die Einkreisung schlägt am Ende des Zuges zu</b>, also erst, wenn der Spieler am Zug beide Aktionen gemacht oder seinen Zug beendet hat. Zuerst wird geprüft, was er selbst einkreist, danach die Ketten der anderen. Alle gegnerischen Figuren im eingekreisten Gebiet werden getroffen. Eigene Figuren (und im 2 gegen 2 die deines Partners) bleiben unberührt:</p>
-  <ul><li><b>Node und Drohne:</b> werden entfernt.</li><li><b>Pylon:</b> verliert einen Node und wird zum Node.</li><li><b>Held:</b> verliert seine Kraft und wird zum Node. Er muss eine Runde warten, bevor du ihn wieder rufen kannst.</li></ul>
-  <p><b>Zweiter Treffer.</b> Figuren, die einen Treffer als Node überlebt haben, bekommen einen gestrichelten roten Ring. Ihr Besitzer hat nun einen Zug Zeit, sie zu befreien. Sind sie danach immer noch eingeschlossen, werden sie am Ende des nächsten Zuges des Einkreisenden entfernt.</p>
-  <div class="box"><b>Beispiel:</b> Ein blauer Pylon und ein blauer Node stehen in einer Ecke. Du schliesst mit deinem letzten Node die Kette. Am Ende deines Zuges gilt: Der Node verschwindet, der Pylon wird zum Node und bekommt einen roten Ring. Bricht Blau deine Kette in seinem Zug nicht auf, verschwindet auch dieser Node am Ende deines nächsten Zuges.</div>
-  <div class="box"><b>Beispiel:</b> Eine blaue Kette schneidet in einer Ecke 7 Punkte ab, auf denen 2 deiner Nodes stehen. 7 ≤ ${E.ENC_MAX}: Am Ende des blauen Zuges sind deine Nodes eingekreist. Schneidet die Kette dagegen eine ganze Feldhälfte mit 25 Punkten ab, passiert nichts.</div>
-  <p><b>Wer zieht, kreist zuerst ein</b> (wie bei Go). Schliessen sich durch eine Aktion Gebiete beider Spieler, wird zuerst geprüft, was der aktive Spieler einkreist.</p>
-  <p><b>Vorsicht:</b> Legst oder ziehst du eine Figur in ein Gebiet, das dein Gegner bereits umschlossen hat, wird sie am Ende deines Zuges getroffen, ausser du brichst die Kette noch im selben Zug auf.</p>
+  <p>Deine <b>Nodes und Pylone</b> bilden die Kette. Helden, Energiewände und Drohnen gehören nicht dazu.</p>
+  <p>Ein Gebiet ist <b>eingekreist</b>, wenn deine Kette es zusammen mit dem Rand vom übrigen Feld abschneidet und es <b>höchstens ${E.ENC_MAX} Punkte</b> umfasst (Figuren und freie Punkte zusammen). Es zählen nur gezeichnete Linien.</p>
+  <p>Geprüft wird <b>am Ende jedes Zuges</b>, zuerst für den Spieler am Zug. Gegnerische Figuren im Gebiet werden getroffen, eigene nicht:</p>
+  <ul><li><b>Node, Drohne:</b> wird entfernt.</li><li><b>Pylon, Held:</b> wird zum Node. Ein Held wartet eine Runde.</li></ul>
+  <p><b>Zweiter Treffer:</b> Ein so entstandener Node erhält einen roten Ring. Ist er am Ende des nächsten Zuges des Einkreisenden noch eingeschlossen, wird er entfernt.</p>
+  <p><b>Vorschau:</b> Eingekreiste Gebiete sind farbig hinterlegt, unter dem Feld steht die Zahl der betroffenen Figuren.</p>
+  <div class="box"><b>Genau gesagt:</b> Entferne aus dem Graphen alle Punkte mit Nodes und Pylonen des Einkreisenden (im 2 gegen 2: seines Teams). Jede zusammenhängende Komponente mit höchstens ${E.ENC_MAX} Punkten ist eingekreist.</div>
+  <div class="box"><b>Beispiel:</b> In einer Ecke stehen ein blauer Pylon und ein blauer Node. Du schliesst die Lücke. Am Zugende verschwindet der Node, der Pylon wird zum Node mit rotem Ring. Befreit Blau ihn nicht, verschwindet er am Ende deines nächsten Zuges.</div>
 
-  <h3>8 · Zerstören, Stapel und Rückkehr</h3>
-  <p>Eine entfernte Figur gibt ihre Nodes auf deinen Stapel: ein Node 1, ein Pylon oder Held 2. Am Anfang deines übernächsten Zuges kommen sie zurück in deinen Pot. Ein zerstörter Held muss genauso lange warten, bevor du ihn wieder rufen kannst. Energiewände und Drohnen kosten keine Nodes und geben auch keine zurück.</p>
+  <h3>8 · Stapel</h3>
+  <p>Entfernte Figuren legen ihre Nodes auf den Stapel: Node 1, Pylon und Held 2. Zu Beginn deines übernächsten Zuges kehren sie in den Pot zurück. Energiewände und Drohnen kosten nichts und geben nichts zurück.</p>
 
-  <h3>9 · Schutz und Lähmung</h3>
-  <p>Figuren mit einem <b>weissen gestrichelten Ring</b> sind geschützt (Energieschild oder Heldenschutz). Bis zum nächsten Zug ihres Besitzers können sie weder zerstört noch eingekreist, übernommen oder vom Gegner verschoben werden.</p>
-  <p>Ein Held mit dem Zeichen <b>EMP</b> ist gelähmt, durch den EMP-Puls des Phantoms: In seinem nächsten Zug kann er weder ziehen noch Fähigkeiten einsetzen.</p>
-  <p>Ein Held mit dem Zeichen <b>LOCK</b> ist im Lockdown des Wardens: In seinem nächsten Zug kann er ziehen, aber keine Fähigkeiten nutzen.</p>
-  <p>Figuren direkt neben einem <b>Warden</b> stehen in seinem Schutzfeld und können nicht durch Fähigkeiten zerstört, übernommen oder verschoben werden. Du erkennst sie an einem feinen Ring mit kleinem Schild. Einkreisen und Minen wirken trotzdem.</p>
+  <h3>9 · Markierungen</h3>
+  <ul><li><b>Weisser gestrichelter Ring:</b> geschützt bis zum nächsten eigenen Zug (Energieschild, Heldenschutz).</li>
+  <li><b>EMP:</b> Held kann im nächsten Zug weder ziehen noch Fähigkeiten nutzen.</li>
+  <li><b>LOCK:</b> Held kann im nächsten Zug keine Fähigkeiten nutzen.</li>
+  <li><b>Kleiner Schild:</b> im Schutzfeld eines Warden, immun gegen Fähigkeiten (nicht gegen Einkreisen und Minen).</li>
+  <li><b>Roter gestrichelter Ring:</b> bereits eingekreist (zweiter Treffer droht).</li></ul>
 
   <h3>10 · Besondere Figuren</h3>
-  <p><b>Energiewand</b> (Warden): ein Quadrat in deiner Farbe. Sie blockiert bis zu deinem nächsten Zug den Weg und kann weder zerstört noch eingekreist werden. Zur Kette zählt sie nicht: Ein Gebiet ist durch eine Wand nicht abgeschlossen.</p>
-  <p><b>Drohne</b> (Schwarm): ein kleines Dreieck. Sie blockiert den Weg, kostet keinen Node und kann nicht ziehen. Zur Kette zählt sie nicht. Ein Treffer oder eine Einkreisung zerstört sie. Du kannst höchstens 2 gleichzeitig haben.</p>
-  <p><b>Mine</b> (Saboteur): Deine eigenen Minen siehst du als gestricheltes ✕, die deines Gegners siehst du nicht. Landet eine gegnerische Figur durch Legen, Ziehen, Springen oder Tauschen auf einer Mine, wird sie zerstört. Höchstens 3 Minen gleichzeitig.</p>
-  <p><b>Gehackter Held</b> (Hacker): Er erscheint in der Farbe seines neuen Herrn, mit einem gestrichelten Ring in der alten Farbe und einer grünen Zahl, die anzeigt, wie viele Züge er noch bleibt. Danach kehrt er zurück. Wird er vorher zerstört, verliert ihn sein ursprünglicher Besitzer.</p>
+  <ul><li><b>Energiewand</b> (Quadrat): blockiert bis zum nächsten Zug ihres Besitzers. Unzerstörbar.</li>
+  <li><b>Drohne</b> (Dreieck): blockiert, zieht nicht. Höchstens 2.</li>
+  <li><b>Mine</b> (✕, nur für dich sichtbar): Eine gegnerische Figur, die darauf landet, wird zerstört. Höchstens 3.</li>
+  <li><b>Gehackter Held:</b> Ring in der alten Farbe, die grüne Zahl zeigt die verbleibenden Züge.</li></ul>
 
-  <h3>11 · Die Helden</h3>
-  <p>Ein «Feld» Entfernung heisst: ein Schritt entlang einer Linie. «In gerader Linie» heisst: immer in dieselbe Richtung des Netzes.</p>
+  <h3>11 · Helden</h3>
+  <p>1 Feld = ein Schritt entlang einer Linie. Gerade Linie = immer dieselbe Richtung.</p>
   <div class="grid">${heroes}</div>
 
-  <h3>12 · Profi: Auren</h3>
-  <p>Spielt ihr auf der Stufe <b>Profi</b>, wählt jeder Spieler zu seinen 3 Helden eine <b>Aura</b>. Sie wirkt die ganze Partie und steht oben neben dem Namen.</p>
+  <h3>12 · Auren (Profi)</h3>
+  <p>Jeder wählt zu seinen Helden eine Aura. Sie wirkt die ganze Partie.</p>
   <div class="grid">${E.AURA_IDS.map(a => `<div class="hcard"><div class="hn"><span class="badge aurab">${auraIcon}</span><h3 style="font-size:17px;margin:0;color:var(--text)">${E.AURAS[a].name}</h3></div><div class="ab">${E.AURAS[a].desc}</div></div>`).join('')}</div>
 
   <h3>13 · Spiel auf Zeit</h3>
-  <p>Vor der Partie kannst du eine <b>Bedenkzeit</b> von 1 bis 20 Minuten pro Spieler einstellen, im Duell tut das, wer den Raum erstellt. Deine Uhr läuft nur, während du am Zug bist. Während Animationen steht sie still. Im Singleplayer läuft nur deine eigene Uhr.</p>
-  <p>Läuft deine Zeit ab, endet die Partie sofort, und es werden die Figuren auf dem Feld gezählt: <b>Node 1 Punkt, Pylon 2 Punkte, Held 3 Punkte</b>. Wer mehr Punkte hat, gewinnt. Bei Gleichstand verliert, wessen Zeit abgelaufen ist.</p>
+  <p>Bedenkzeit 1 bis 20 Minuten pro Spieler. Die Uhr läuft nur im eigenen Zug. Läuft sie ab, zählen die Punkte. Bei Gleichstand verliert, wessen Zeit abgelaufen ist.</p>
 
   <h3>14 · Spielende</h3>
-  <p><b>Rundenlimit:</b> Nach der eingestellten Rundenzahl endet die Partie (10 bis 50 Runden, Standard ${E.ROUND_LIMIT}). Du stellst sie vor der Partie mit dem Regler «Runden» ein. Gezählt werden die Figuren auf dem Feld: <b>Node 1 Punkt, Pylon 2, Held 3</b>. Wer mehr Punkte hat, gewinnt, bei Gleichstand ist es unentschieden. Die aktuelle Runde siehst du oben in der Mitte.</p>
-  <p><b>Endphase:</b> In den letzten ${E.ENDPHASE} Runden kommt nichts mehr vom Stapel zurück, auch nicht mit der Aura Recycling. Jede verlorene Figur fehlt dann endgültig. Unter dem Feld steht, wann die Endphase beginnt.</p>
-  <p>Die Partie endet sofort, wenn ein Spieler keine Figur mehr auf dem Feld hat. Sein Gegner gewinnt. Über das Menü (☰) kannst du auch aufgeben.</p>
+  <ul><li>Wer keine Figur mehr auf dem Feld hat, verliert.</li>
+  <li><b>Rundenlimit</b> (10 bis 50, Standard ${E.ROUND_LIMIT}): Danach zählen die Punkte: <b>Node 1, Pylon 2, Held 3</b>. Gleichstand ist unentschieden.</li>
+  <li><b>Endphase:</b> In den letzten ${E.ENDPHASE} Runden kehrt nichts mehr vom Stapel zurück.</li>
+  <li>Aufgeben über das Menü ☰.</li></ul>
 
   <h3>15 · Multiplayer</h3>
-  <p>Im <b>Multiplayer</b> spielt jeder auf seinem eigenen Gerät. Es gibt zwei Spielarten:</p>
-  <ul><li><b>3 Spieler, alle gegen alle:</b> Jeder spielt für sich, jeder hat 15 Nodes.</li>
-  <li><b>2 gegen 2:</b> Zwei Teams. Die Teams sind abwechselnd am Zug (Team A, Team B, Team A, Team B). Jeder Spieler hat 12 Nodes.</li></ul>
-  <p>Gespielt wird auf einem <b>grösseren Netz aus 85 Punkten</b>. Wer nicht als Erster am Zug ist, bekommt wie im Duell 1 Node mehr. Deine Figuren sind orange, die deines Partners gelb, die Gegner blau und violett.</p>
-  <p><b>Ketten und Einkreisen.</b> Im 2 gegen 2 bilden du und dein Partner die Grenze <b>gemeinsam</b>: Eure Nodes und Pylone zählen zusammen als eine Kette. Bei 3 Spielern zählt nur die eigene Kette; eine Grenze aus Figuren zweier Gegner kreist nichts ein. Eingekreist werden <b>nur Gegner</b>. Deine eigenen Figuren und die deines Partners bleiben stehen, auch wenn sie in einem eingekreisten Gebiet stehen.</p>
-  <p><b>Fähigkeiten</b> treffen nur Gegner. Minen zünden nur unter Gegnern, und dein Partner sieht deine Minen. Das Schutzfeld des Warden und das Energieschild schützen nur die eigenen Figuren.</p>
-  <p><b>Ausscheiden und Sieg.</b> Wer keine Figur mehr auf dem Feld hat, scheidet aus und wird übersprungen. Ein Team ist erst draussen, wenn beide Spieler ausgeschieden sind. Es gewinnt, wer als Letzter (bzw. als letztes Team) übrig ist. Beim Rundenlimit und wenn eine Uhr abläuft, zählen die Punkte, im 2 gegen 2 pro Team zusammengezählt.</p>
-  <p><b>Freie Plätze.</b> Wer den Raum erstellt, kann freie Plätze mit dem Computer besetzen. Vor der Heldenwahl kannst du auf einen freien Platz wechseln, zum Beispiel ins andere Team.</p>
+  <ul><li><b>3 Spieler:</b> jeder für sich, je 15 Nodes.</li>
+  <li><b>2 gegen 2:</b> Die Teams ziehen abwechselnd (A, B, A, B), je 12 Nodes. Partner bilden gemeinsam Ketten und zählen ihre Punkte zusammen.</li>
+  <li>Feld mit 85 Punkten. Du bist orange, dein Partner gelb, die Gegner blau und violett.</li>
+  <li>Fähigkeiten, Minen und Einkreisen treffen nur Gegner. Figuren zweier Gegner bilden zusammen keine Kette.</li>
+  <li>Wer keine Figur mehr hat, scheidet aus. Ein Team erst, wenn beide Spieler draussen sind.</li>
+  <li>Freie Plätze kann der Gastgeber mit dem Computer besetzen.</li></ul>
 
   <h3>16 · Spielziele</h3>
-  <p>Vor der Partie wählst du neben der Spielstufe auch das <b>Spielziel</b>. Alle Regeln oben gelten weiter, dazu kommt ein zusätzlicher Weg zum Sieg:</p>
-  <ul><li><b>Klassisch:</b> Wer alle anderen vom Feld fegt, gewinnt. Sonst entscheiden am Ende die Punkte.</li>
-  <li><b>Brücke:</b> Jeder Spieler (im 2 gegen 2 jedes Team) hat zwei markierte Punkte (Rauten) in gegenüberliegenden Ecken, Anfang und Ende. Wer sie mit einer durchgehenden Kette aus eigenen Nodes und Pylonen verbindet (Energiewände und Drohnen zählen nicht), gewinnt. Der Weg ist egal, es zählen nur die gezeichneten Linien. Geprüft wird am Zugende. Auf die markierten Punkte eines Gegners und auf die Punkte direkt daneben darfst du keine Figur stellen (sie sind schwach markiert).</li>
-  <li><b>Leuchtfeuer:</b> Auf dem Feld sind 3 Leuchtfeuer (im Multiplayer 4). Hältst du ab Runde ${E.BEACON_ROUND} zu Beginn deines Zuges die Mehrheit davon mit eigenen Figuren besetzt (2 von 3 bzw. 3 von 4), gewinnst du. Die anderen haben also immer noch einen Zug Zeit, dich zu vertreiben.</li>
-  <li><b>Kern:</b> Dein erster gesetzter Node ist dein Kern (mit Ring markiert). Er gehört zur Kette, zieht aber nicht, wird nicht gestapelt und kann durch keine Fähigkeit zerstört werden. Wird er eingekreist, scheidest du aus, und deine Figuren verschwinden. Im 2 gegen 2 ist ein Team erst draussen, wenn beide Kerne gefallen sind.</li></ul>
-  <p>Brücke und Leuchtfeuer sind Wettrennen. Damit der Startspieler keinen Vorsprung hat, hat er dort im allerersten Zug nur <b>1 Aktion</b>.</p>
+  <ul><li><b>Klassisch:</b> wie oben beschrieben.</li>
+  <li><b>Brücke:</b> Verbinde deine zwei Rauten mit einer Kette aus Nodes und Pylonen. Der Weg ist frei. Gegnerische Rauten und ihre Nachbarpunkte sind für dich gesperrt.</li>
+  <li><b>Leuchtfeuer:</b> Hältst du ab Runde ${E.BEACON_ROUND} zu Beginn deines Zuges die Mehrheit der Leuchtfeuer (2 von 3, im Multiplayer 3 von 4), gewinnst du.</li>
+  <li><b>Kern:</b> Dein erster Node ist dein Kern. Er zieht nicht, wird nicht gestapelt und ist immun gegen Fähigkeiten. Wird er eingekreist, scheidest du aus.</li></ul>
+  <p>Bei Brücke und Leuchtfeuer hat der Startspieler im ersten Zug nur 1 Aktion.</p>
 
   <h3>17 · Tipps</h3>
-  <ul><li>Baue früh Pylone: Sie zählen zur Kette, ziehen weit und werden später zu Helden.</li>
-  <li>Lass keine einzelnen Nodes am Rand stehen, sie sind leicht einzukreisen.</li>
-  <li>Pylone und Helden überleben eine Einkreisung als Node. Befreie sie danach schnell, indem du die gegnerische Kette an ihrer schwächsten Stelle aufbrichst.</li>
-  <li>Halte deine Helden hinter deinen Ketten, denn sie selbst schliessen keine Lücken.</li>
-  <li>Achte auf die rot markierten Ziele, wenn du eine gegnerische Figur antippst: So siehst du, was dir droht.</li></ul>
+  <ul><li>Baue früh Pylone: Sie ziehen weit und werden zu Helden.</li>
+  <li>Einzelne Nodes am Rand sind leicht einzukreisen.</li>
+  <li>Helden schliessen keine Lücken. Halte sie hinter deinen Ketten.</li>
+  <li>Tippe gegnerische Figuren an: Rot markiert zeigt, was dir droht.</li></ul>
 
   <h3>Kurzübersicht</h3>
-  <div class="box"><b>Heldenwahl:</b> 3 Helden, derselbe höchstens zweimal (Grundspiel: 5 Helden · Erweitert: 10 · Profi: 10 + 1 Aura)<br>
-  <b>Pro Zug 2 Aktionen:</b> Legen · Stapeln · Held rufen · Ziehen · Fähigkeit<br>
-  <b>Start:</b> erster Node an den Rand, danach nur neben eigene Figuren<br>
+  <div class="box"><b>Zug:</b> 2 Aktionen: Legen · Stapeln · Held rufen · Ziehen · Fähigkeit<br>
+  <b>Start:</b> erster Node an den Rand, danach neben eigene Figuren<br>
   <b>Runde 1–2:</b> keine Helden, kein Einkreisen<br>
-  <b>Einkreisen:</b> Ketten nur aus Nodes und Pylonen; nur gezeichnete Linien zählen; Gebiet höchstens ${E.ENC_MAX} Punkte<br>
-  <b>Treffer (am Zugende):</b> Node und Drohne weg · Pylon und Held werden Node, im nächsten Zug weg, wenn nicht befreit<br>
-  <b>Entfernt:</b> Nodes auf den Stapel, nach einer Runde Pause zurück in den Pot<br>
-  <b>Sieg:</b> Der Gegner hat keine Figur mehr auf dem Feld, oder du hast nach der eingestellten Rundenzahl (10–50) mehr Punkte<br>
-  <b>Ausgleich:</b> Der Nachzieher startet mit 16 Nodes<br>
-  <b>Auf Zeit:</b> Läuft eine Uhr ab, gewinnt, wer mehr Punkte hat (Node 1 · Pylon 2 · Held 3)<br>
-  <b>Endphase:</b> letzte ${E.ENDPHASE} Runden, nichts kommt vom Stapel zurück<br>
-  <b>Spielziele:</b> Klassisch · Brücke (2 Rauten verbinden) · Leuchtfeuer (Mehrheit ab Runde ${E.BEACON_ROUND}) · Kern (erster Node, nicht einkreisen lassen)<br>
-  <b>Multiplayer:</b> 3 Spieler alle gegen alle (15 Nodes) oder 2 gegen 2 (12 Nodes), 85 Punkte; Einkreisen trifft nur Gegner</div>
+  <b>Einkreisen:</b> Kette aus Nodes und Pylonen, Gebiet höchstens ${E.ENC_MAX} Punkte, am Zugende<br>
+  <b>Treffer:</b> Node weg · Pylon und Held werden Node (roter Ring)<br>
+  <b>Stapel:</b> Nodes kehren nach einer Runde in den Pot zurück<br>
+  <b>Ende:</b> Gegner ohne Figur, sonst Punkte nach dem Rundenlimit (Node 1 · Pylon 2 · Held 3)<br>
+  <b>Endphase:</b> letzte ${E.ENDPHASE} Runden ohne Rückkehr vom Stapel</div>
   <div style="height:28px"></div></div>`;
 }
 const backIcon = '<svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg>';
@@ -350,7 +436,7 @@ function lobbyScreen() {
     const ready = G.peers > 0;
     return `<div class="screen">${back}<div class="wait">
       <p class="muted" style="margin:0">Raumcode</p><div class="code">${esc(G.code)}</div>
-      <p class="muted" style="margin:0 0 8px">Dein Gegner öffnet Nodes auf seinem Gerät, tippt auf «Duell» und gibt diesen Code ein.</p>
+      <p class="muted" style="margin:0 0 8px">Dein Gegner tippt auf «Duell» und gibt diesen Code ein.</p>
       ${G.net && G.net.shareUrl ? `<button class="btn small" data-act="share">Link teilen</button>` : ''}
       <p class="${ready ? '' : 'pulse'}" style="margin:8px 0 0">${ready ? 'Gegner verbunden' : G.net ? 'Warte auf Gegner …' : 'Verbinde …'}</p>
       <p class="status ${G.err ? 'err' : ''}">${esc(G.msg)}</p>
@@ -421,7 +507,7 @@ function mlobbyScreen() {
   return `<div class="screen">${back}
     <div class="stack" style="margin-top:2vh">
       <div style="text-align:center"><p class="muted" style="margin:0">Raumcode</p><div class="code" style="margin:6px 0 4px">${esc(G.code)}</div>
-      <p class="muted" style="margin:0 0 8px;font-size:14px">Die anderen öffnen Nodes, tippen auf «Multiplayer» und geben diesen Code ein.</p>
+      <p class="muted" style="margin:0 0 8px;font-size:14px">Die anderen tippen auf «Multiplayer» und geben diesen Code ein.</p>
       ${G.net && G.net.shareUrl ? `<button class="btn small" data-act="share">Link teilen</button>` : ''}</div>
       <p class="muted" style="margin:8px 0 0;font-size:13px;text-align:center">${s.mode === 'team' ? '2 gegen 2' : '3 Spieler, alle gegen alle'} · ${E.limitOf(s)} Runden · Uhr: ${s.clock ? clockLabel(s.clock.minutes) : 'Aus'} · ${E.TIERS[E.tierOf(s)]} · ${E.GOALS[s.goal || 'classic']}</p>
       ${seats}
@@ -520,6 +606,7 @@ function boardSvg() {
   const tgt = new Set(), atk = new Set();
   if (my && G.pending) G.pending.targets.forEach(i => (s.cells[i] ? atk : tgt).add(i));
   else if (my && G.sel === null) E.placeTargets(s, G.me).forEach(i => tgt.add(i));
+  if (G.mode === 'tutorial') { const ok = new Set(tutHL()); [...tgt].forEach(i => { if (!ok.has(i)) tgt.delete(i); }); [...atk].forEach(i => { if (!ok.has(i)) atk.delete(i); }); }
   const now = performance.now();
   let o = `<svg role="img" aria-label="Spielfeld" viewBox="${minx} ${miny} ${w} ${h}"><defs>${HALO}</defs>`;
   B.edges.forEach(([a, b]) => { const A = B.points[a], C = B.points[b]; o += `<line x1="${A.x}" y1="${A.y}" x2="${C.x}" y2="${C.y}" stroke="#34446F" stroke-width="1.6" stroke-linecap="round"/>`; });
@@ -529,6 +616,7 @@ function boardSvg() {
   if (s.anchors) Object.entries(s.anchors).forEach(([t, pts]) => { const q = s.team.indexOf(+t) >= 0 ? s.team.indexOf(+t) : +t; const cc = col(q); E.anchorZone(s, +t).filter(i => !pts.includes(i)).forEach(i => { const pt = B.points[i]; o += `<circle cx="${pt.x}" cy="${pt.y}" r="7" fill="${cc}" fill-opacity=".14"/>`; }); pts.forEach(i => { const pt = B.points[i]; o += `<g aria-label="Brückenziel"><rect x="${pt.x - 13}" y="${pt.y - 13}" width="26" height="26" rx="3" transform="rotate(45 ${pt.x} ${pt.y})" fill="${cc}" fill-opacity=".12" stroke="${cc}" stroke-width="1.8"/></g>`; }); });
   if (s.beacons) s.beacons.forEach(i => { const pt = B.points[i]; o += `<g aria-label="Leuchtfeuer"><circle cx="${pt.x}" cy="${pt.y}" r="15" fill="#E8ECF8" fill-opacity=".07" stroke="#E8ECF8" stroke-width="1.6" stroke-dasharray="2 3"/>${[0, 60, 120, 180, 240, 300].map(d => { const r = d * Math.PI / 180; return `<line x1="${pt.x + Math.cos(r) * 17}" y1="${pt.y + Math.sin(r) * 17}" x2="${pt.x + Math.cos(r) * 21}" y2="${pt.y + Math.sin(r) * 21}" stroke="#E8ECF8" stroke-width="1.6" stroke-linecap="round"/>`; }).join('')}</g>`; });
   tgt.forEach(i => { const pt = B.points[i]; o += `<circle cx="${pt.x}" cy="${pt.y}" r="10" fill="none" stroke="${ME_COL}" stroke-width="2" stroke-dasharray="3 3"/>`; });
+  tutHL().forEach(i => { const pt = B.points[i]; if (pt) o += `<circle class="tuthl" cx="${pt.x}" cy="${pt.y}" r="16" fill="none" stroke="#FFFFFF" stroke-width="2"/>`; });
   s.cells.forEach((c, i) => {
     if (!c || (FX.hide.get(i) || 0) > now) return;
     const { x, y } = B.points[i];
@@ -1103,25 +1191,25 @@ function panel() {
   const i = G.sel;
   const c = i === null ? null : s.cells[i];
   if (!c) {
-    return `<div class="panel"><div class="ttl">Dein Zug</div><div class="hint">Tippe auf einen markierten Punkt, um einen Node zu legen, oder wähle eine eigene Figur.${s.pot[G.me] === 0 ? ' Dein Pot ist leer.' : ''}</div></div>`;
+    return `<div class="panel"><div class="ttl">Dein Zug</div><div class="hint">Markierten Punkt antippen, um zu legen, oder eigene Figur wählen.${s.pot[G.me] === 0 ? ' Dein Pot ist leer.' : ''}</div></div>`;
   }
   if (c.p !== G.me) {
     const what = c.k === 'hero' ? E.HEROES[c.h].name : E.UNIT_NAME[c.k];
-    if (c.k === 'wall' || c.k === 'drone') return `<div class="panel"><div class="ttl">${shapeIcon(c.p, 14)} ${what} ${whose(c.p)}</div><div class="hint">${c.k === 'wall' ? 'Blockiert bis zum nächsten Zug ihres Besitzers den Weg. Sie kann nicht zerstört werden und zählt nicht zur Kette.' : 'Blockiert den Weg, zählt aber nicht zur Kette. Ein Treffer zerstört sie.'}</div></div>`;
+    if (c.k === 'wall' || c.k === 'drone') return `<div class="panel"><div class="ttl">${shapeIcon(c.p, 14)} ${what} ${whose(c.p)}</div><div class="hint">${c.k === 'wall' ? 'Blockiert bis zum nächsten Zug ihres Besitzers. Unzerstörbar, kein Teil der Kette.' : 'Blockiert den Weg, kein Teil der Kette.'}</div></div>`;
     return `<div class="panel"><div class="ttl">${shapeIcon(c.p, 14)} ${what} ${whose(c.p)}</div>${c.k === 'hero' ? `<div class="hint">${E.HEROES[c.h].n.name}: ${E.HEROES[c.h].n.desc}<br>${E.HEROES[c.h].s.name}: ${E.HEROES[c.h].s.desc}</div>` : ''}</div>`;
   }
   const pm = G.pending ? G.pending.mode : null;
   if (c.k === 'wall' || c.k === 'drone') {
-    return `<div class="panel"><div class="ttl">${E.UNIT_NAME[c.k]}</div><div class="hint">${c.k === 'wall' ? 'Deine Energiewand blockiert bis zu deinem nächsten Zug den Weg. Zur Kette zählt sie nicht.' : 'Deine Drohne blockiert den Weg und kann nicht ziehen. Zur Kette zählt sie nicht. Mit dem Schwarmangriff explodiert sie.'}</div></div>`;
+    return `<div class="panel"><div class="ttl">${E.UNIT_NAME[c.k]}</div><div class="hint">${c.k === 'wall' ? 'Blockiert bis zu deinem nächsten Zug. Kein Teil der Kette.' : 'Blockiert den Weg, kein Teil der Kette. Explodiert beim Schwarmangriff.'}</div></div>`;
   }
   if (c.k === 'node') {
-    return `<div class="panel"><div class="ttl">Node</div><div class="hint">Tippe auf ein markiertes Feld, um zu ziehen.</div>
+    return `<div class="panel"><div class="ttl">Node</div><div class="hint">Markiertes Feld antippen, um zu ziehen.</div>
     <div class="row"><button class="btn" data-act="stack" ${s.pot[G.me] > 0 ? '' : 'disabled'}>Stapeln → Pylon</button></div>${E.canRufNode(s, G.me) && E.availableHeroes(s, G.me).length ? `<div class="hint">Rufbereitschaft (einmal pro Partie): Held direkt aus diesem Node rufen.</div><div class="row">${[...new Set(s.picks[G.me])].map(h => `<button class="btn" data-act="mkhero" data-h="${h}" ${E.availableHeroes(s, G.me).includes(h) ? '' : 'disabled'}>${E.HEROES[h].name}</button>`).join('')}</div>` : ''}</div>`;
   }
   if (c.k === 'pylon') {
     const av = E.availableHeroes(s, G.me);
     const heroes = [...new Set(s.picks[G.me] || [])].map(h => `<button class="btn" data-act="mkhero" data-h="${h}" ${av.includes(h) ? '' : 'disabled'}>${E.HEROES[h].name}</button>`).join('');
-    return `<div class="panel"><div class="ttl">Pylon</div><div class="hint">Ziehe bis 3 Felder weit oder verwandle ihn in einen Helden${s.round < E.HERO_ROUND ? ` (ab Runde ${E.HERO_ROUND})` : ''}.</div>
+    return `<div class="panel"><div class="ttl">Pylon</div><div class="hint">Zieht bis 3 Felder oder wird zum Helden${s.round < E.HERO_ROUND ? ` (ab Runde ${E.HERO_ROUND})` : ''}.</div>
     <div class="row">${heroes}</div></div>`;
   }
   const ab = (kind, copy) => {
@@ -1130,16 +1218,16 @@ function panel() {
     const on = G.pending && G.pending.mode === kind && !!G.pending.copy === copy;
     return `<button class="btn ability ${on ? 'on' : ''}" data-act="ability" data-kind="${kind}" data-copy="${copy ? 1 : 0}" ${ok ? '' : 'disabled'}>${H[kind].name}<small>${E.abilityCost(t, kind) === 1 ? '1 Aktion' : '2 Aktionen'}</small></button>`;
   };
-  let hint = 'Tippe auf ein markiertes Feld, um zu ziehen, oder wähle eine Fähigkeit.';
-  if (c.stun) hint = 'Durch EMP gelähmt: Dieser Held kann in diesem Zug nichts tun.';
-  else if (c.lock && !pm) hint = 'Lockdown: Dieser Held kann in diesem Zug keine Fähigkeiten nutzen, aber ziehen.';
+  let hint = 'Ziehen oder Fähigkeit wählen.';
+  if (c.stun) hint = 'EMP: Dieser Held setzt diesen Zug aus.';
+  else if (c.lock && !pm) hint = 'Lockdown: nur Ziehen möglich.';
   else if (pm === 'n' || pm === 's') {
     const A_ = E.HEROES[G.pending.copy ? c.as : c.h][pm];
     hint = A_.desc + ' ' + (A_.steps ? A_.steps[G.pending.chosen.length] || '' : 'Tippe auf ein Ziel.');
   }
   if (c.orig) hint = `Gehackt: Dieser Held gehört dir noch ${Math.max(1, c.hack - 1)} ${c.hack - 1 === 1 ? 'Zug' : 'Züge'}. ` + hint;
   const why = ['n', 's'].map(k => (!c.stun && !c.lock && !E.abilityUsable(s, i, k, false) && E.abilityCost(c.h, k) <= s.actions && E.needsTarget(c.h, k) && E.blockedByWarden(s, i, k).length) ? E.HEROES[c.h][k].name : null).filter(Boolean);
-  if (why.length) hint += ` ${why.join(' und ')}: Kein Ziel, weil die möglichen Ziele im Schutzfeld eines gegnerischen Warden stehen (kleiner Schild am Ring).`;
+  if (why.length) hint += ` ${why.join(' und ')}: kein Ziel. Alle Ziele stehen im Schutzfeld eines Warden.`;
   const copyRow = c.as ? `<div class="hint" style="display:flex;align-items:center;gap:6px">${heroIcon(c.as, 16, '#A3AED0')} Kopiert: ${E.HEROES[c.as].name}</div><div class="row">${ab('n', true)}${ab('s', true)}</div>` : '';
   const fin = G.pending && G.pending.chosen && G.pending.chosen.length && E.canFinish(G.pending.copy ? c.as : c.h, G.pending.mode, G.pending.chosen)
     ? `<div class="row"><button class="btn primary" data-act="finishAbility">Fertig</button></div>` : '';
@@ -1166,6 +1254,7 @@ function gameScreen() {
     ${playerBlock(right, true)}</div>`;
   return `<div class="screen" style="padding:0">
   ${bar}
+  ${G.mode === 'tutorial' ? coachBox() : ''}
   <div class="boardwrap">${boardSvg()}</div>
   ${zoneHint()}
   <div class="status ${G.err ? 'err' : ''}" role="status">${esc(G.msg || s.last || '')}</div>
@@ -1262,6 +1351,7 @@ function act(a) {
   if (G.state && G.state.clock) a.spent = spentNow();
   let next;
   try { next = E.apply(G.state, a); } catch (e) { setMsg(e.message, true); return render(); }
+  if (G.mode === 'tutorial') return tutAct(a, next);
   G.sel = null; G.pending = null; setMsg('');
   if (G.mode === 'single') { G.log.push(a); setState(next); render(); maybeAI(); }
   else { G.net.send(a, next); }
@@ -1540,6 +1630,9 @@ app.addEventListener('click', e => {
     case 'rulesIngame': G.menu = false; G.ruleBack = 'game'; G.screen = 'rules'; render(); window.scrollTo(0, 0); break;
     case 'back': G.screen = G.ruleBack; render(); break;
     case 'install': installApp(); break;
+    case 'tutorial': startTutorial(); break;
+    case 'tutNext': tutNext(); break;
+    case 'tutPlay': G.tier = 1; G.goal = 'classic'; saveSettings(); G.mode = null; G.state = null; startSingle(); break;
     case 'installClose': G.installHelp = false; render(); break;
     case 'viewBoard': G.viewBoard = true; G.sel = null; render(); break;
     case 'showResult': G.viewBoard = false; render(); break;
