@@ -1,5 +1,5 @@
 // Nodes – Computergegner: bewertet alle Zugpaare (2 Aktionen) und nimmt das beste.
-import { apply, legalActions, targets, heroType, BOARD, stapelCount, HERO_IDS, AURA_IDS, placeTargets, captureGain, HERO_ROUND, trappedAreas, hideMines, minesOf, NB, useBoard, foe, teamOf, matesOf, bridgeGap, beaconsHeld, beaconNeed } from './engine.js';
+import { apply, legalActions, targets, heroType, BOARD, stapelCount, HERO_IDS, AURA_IDS, placeTargets, captureGain, HERO_ROUND, trappedAreas, hideMines, minesOf, NB, useBoard, foe, teamOf, matesOf, bridgeGap, beaconsHeld, beaconNeed, teamScore } from './engine.js';
 
 const VAL = { node: 1, pylon: 2.4, hero: 4.2, wall: 0.3, drone: 0.9 };
 
@@ -66,6 +66,10 @@ function goalScore(s, p) {
   const me = teamOf(s, p);
   const foeTeams = [...new Set(s.alive.map((a, q) => (a && foe(s, q, p) ? teamOf(s, q) : -1)).filter(t => t >= 0))];
   let v = 0;
+  // Das Spiel endet, wenn kein Punkt mehr frei ist: Wer vorne liegt, füllt das Feld, wer hinten liegt, hält es offen
+  const free = s.cells.reduce((a, c) => a + (c ? 0 : 1), 0);
+  const lead = teamScore(s, me) - Math.max(0, ...foeTeams.map(t => teamScore(s, t)));
+  v -= 0.25 * Math.sign(lead) * free;
   if (s.anchors) {
     const f = g => (g === Infinity ? 0 : 40 / (g + 2));
     v += f(bridgeGap(s, me));
@@ -94,7 +98,7 @@ function regionLoss(cells, X, victim) {
   const trapped = trappedAreas(cells, X, MATES ? MATES[X] : null);
   for (const comp of trapped) for (const j of comp) { const c = cells[j]; if (c && c.p === victim && !c.prot && c.k !== 'wall') { lost += c.core ? 60 : c.k === 'node' ? 1 : c.k === 'drone' ? VAL.drone : VAL[c.k] - 1; if (c.k === 'node') count++; } }
   // Platz: kleinstes Gebiet, in dem eine eigene Figur steht (nur relevant, wenn knapp)
-  const seenWall = i => { const c = cells[i]; return c && (MATES ? MATES[X] : [X]).includes(c.p) && (c.k === 'node' || c.k === 'pylon'); };
+  const seenWall = i => { const c = cells[i]; return c && (c.k === 'hole' || ((MATES ? MATES[X] : [X]).includes(c.p) && (c.k === 'node' || c.k === 'pylon'))); };
   const seen = new Uint8Array(BOARD.V);
   let best = 0;
   for (let i = 0; i < BOARD.V; i++) {
@@ -162,8 +166,24 @@ function easyTurn(s) {
   return seq.length ? seq : [{ t: 'end', p }];
 }
 
+// Tutorial-Gegner: spielt bewusst schwach. Legt gern an den Rand, verteilt sich, nutzt Helden nur selten.
+function noviceTurn(s) {
+  const p = s.cur, seq = [];
+  let st = s;
+  for (let k = 0; k < 2 && st.phase === 'play' && st.cur === p; k++) {
+    const L = legalActions(st, true).filter(a => a.t !== 'end' && a.t !== 'remove');
+    if (!L.length) break;
+    const w = a => a.t === 'place' ? (BOARD.points[a.at].edge ? 4 : 1) : a.t === 'stack' ? 0.6 : a.t === 'hero' ? 0.8 : a.t === 'ability' ? 0.5 : 0.15;
+    const tot = L.reduce((x, a) => x + w(a), 0);
+    let r = Math.random() * tot, pick = L[0];
+    for (const a of L) { r -= w(a); if (r <= 0) { pick = a; break; } }
+    try { st = apply(st, pick); seq.push(pick); } catch { break; }
+  }
+  return seq;
+}
 export function chooseTurn(s, level = 'hard') {
   useBoard(s);
+  if (level === 'novice') return noviceTurn(hideMines(s, s.cur));
   MATES = Array.from({ length: s.n }, (_, X) => matesOf(s, X));
   if (level === 'easy') return easyTurn(s);
   s = hideMines(s, s.cur);   // Der Computer sieht die Minen seines Gegners nicht

@@ -58,11 +58,29 @@ const saveSettings = () => { try { localStorage.setItem('nodes-settings', JSON.s
 const reduced = () => window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 // Neuer Spielstand; gibt die Dauer der Effekte zurück
 function setState(next, animate = true) {
+  const wasOver = G.state && G.state.phase === 'over';
+  const prevCur = G.state ? G.state.cur : null;
   G.state = next;
   if (next && next.phase !== 'over') G.viewBoard = false;
   syncBoard();
   G.mark = performance.now();
-  return animate ? playFx(next) : 0;
+  G.overAt = 0;
+  const dur = animate ? playFx(next) : 0;
+  // Zugwechsel: erst alle Animationen fertig, dann darf der nächste Spieler (Mensch oder Computer)
+  if (animate && dur > 0 && next && next.cur !== prevCur && FX.end > (FX.lock || 0)) {
+    FX.lock = FX.end + 120;
+    G.mark = Math.max(G.mark || 0, FX.lock);
+    clearTimeout(FX.unlock);
+    FX.unlock = setTimeout(render, FX.lock - performance.now() + 30);
+  }
+  if (animate && next && next.phase === 'over' && !wasOver) {
+    // Letzte Animationen (z. B. Einkreisen) fertig zeigen, dann Sieg/Niederlage
+    const wait = dur + 900;
+    G.overAt = performance.now() + wait;
+    G.sel = null; G.pending = null;
+    setTimeout(render, wait + 20);
+  }
+  return dur;
 }
 // Uhr: verbrauchte Zeit seit Beginn des Zuges bzw. der letzten Aktion (Animationen zählen nicht)
 const spentNow = () => Math.max(0, Math.round(performance.now() - Math.max(G.mark || 0, FX.lock || 0)));
@@ -138,7 +156,7 @@ const goalNow = () => (G.mode === 'single' ? G.goal : (G.state && G.state.goal) 
 const tierNow = () => (G.mode === 'single' ? G.tier : E.tierOf(G.state));
 const poolNow = () => (tierNow() === 1 ? E.BASIC_HEROES : E.HERO_IDS);
 const clockLabel = m => (m ? `${m} Min.` : 'Aus');
-const roundPicker = () => `<div class="clockset"><label for="roundrange"><b>Runden</b> <span class="muted" id="roundlbl">${G.rounds}</span></label>
+const roundPickerUnused = () => `<div class="clockset"><label for="roundrange"><b>Runden</b> <span class="muted" id="roundlbl">${G.rounds}</span></label>
   <input id="roundrange" type="range" min="${E.ROUND_MIN}" max="${E.ROUND_MAX}" step="5" value="${G.rounds}"></div>`;
 const clockPicker = () => `<div class="clockset"><label for="clockrange"><b>Uhr</b> <span class="muted" id="clocklbl">${clockLabel(G.clockMin)}</span></label>
   <input id="clockrange" type="range" min="0" max="${E.CLOCK_MAX}" step="1" value="${G.clockMin}">
@@ -153,77 +171,89 @@ function render() {
   else if (s === 'rules') html = rulesScreen();
   else if (s === 'lobby') html = lobbyScreen();
   else if (s === 'mlobby') html = mlobbyScreen();
+  else if (s === 'tutmenu') html = tutMenuScreen();
   else if (s === 'pick') html = pickScreen();
   else if (s === 'game') html = gameScreen();
-  app.innerHTML = html + (G.menu ? menuOverlay() : '') + (G.screen === 'game' && G.state && G.state.phase === 'over' ? (G.viewBoard ? viewBar() : overOverlay()) : '');
+  app.innerHTML = html + (G.menu ? menuOverlay() : '') + (G.screen === 'game' && G.state && G.state.phase === 'over' && performance.now() >= (G.overAt || 0) ? (G.viewBoard ? viewBar() : overOverlay()) : '');
   syncFx();
 }
 
-// ---------- Tutorial: eine vorgegebene Partie im Grundspiel ----------
-// Du spielst Orange und darfst nur die verlangte Aktion ausführen. Blau spielt seine Züge selbst.
+// ---------- Tutorial in 3 Levels: kurz geführt, dann frei gegen einen schwachen Gegner ----------
 const TUT_HEROES = ['titan', 'sniper', 'interceptor'];
-const TUT = [
-  { info: true, title: 'Willkommen bei Nodes',
-    text: 'Du spielst <b style="color:' + ME_COL + '">Orange</b>, dein Gegner <b style="color:' + OPP_COL + '">Blau</b>. Pro Zug hast du <b>2 Aktionen</b>. Tippe immer auf den weissen Ring.' },
-  { title: 'Ersten Node legen', a: { t: 'place', at: 24 },
-    text: 'Der erste Node kommt an den <b>Rand</b>.',
-    done: 'Nodes kommen aus deinem <b>Pot</b> (oben links).' },
-  { title: 'Anbauen', a: { t: 'place', at: 25 },
-    text: 'Jeder weitere Node muss über eine <b>Linie</b> an eine eigene Figur grenzen.',
-    done: 'Deine 2 Aktionen sind verbraucht.' },
-  { blue: { t: 'place', at: 16 }, say: 'Blau legt seinen ersten Node an den Rand …' },
-  { blue: { t: 'place', at: 17 }, say: '… und baut an.' },
-  { title: 'Weiterbauen', a: { t: 'place', at: 26 },
-    text: 'Runde 2. Lege einen Node.' },
-  { title: 'Stapeln', a: { t: 'stack', at: 26 },
-    text: 'Tippe auf den neuen Node, dann auf <b>«Stapeln»</b>. Zwei Nodes ergeben einen <b>Pylon</b>.',
-    done: 'Pylone erkennst du am Ring.' },
-  { blue: { t: 'place', at: 18 }, say: 'Blau baut weiter …' },
-  { blue: { t: 'place', at: 10 }, say: '… Richtung Mitte.' },
-  { title: 'Held rufen', a: { t: 'hero', at: 26, h: 'titan' },
-    text: 'Ab Runde 3 wird ein Pylon zum <b>Helden</b>. Tippe auf den Pylon und wähle den <b>Titan</b>.',
-    done: 'Der Titan zerstört mit der <b>Plasmaklinge</b> benachbarte Gegner.' },
-  { title: 'Node legen', a: { t: 'place', at: 33 },
-    text: 'Lege einen Node.' },
-  { blue: { t: 'place', at: 11 }, say: 'Blau baut oben weiter …' },
-  { blue: { t: 'place', at: 4 }, say: '… und noch einmal.' },
-  { title: 'Fähigkeit einsetzen', a: { t: 'ability', from: 26, kind: 'n', target: 18 },
-    text: 'Tippe auf den <b>Titan</b>, wähle <b>«Plasmaklinge»</b>, dann den blauen Node.',
-    done: 'Zerstörte Figuren kommen auf den <b>Stapel</b> und kehren nach einer Runde in den Pot zurück. Die zwei blauen Nodes in der Ecke sind jetzt fast abgeschnitten.' },
-  { title: 'Ziehen', a: { t: 'move', from: 33, to: 34 },
-    text: 'Ein Node zieht 1 Feld, ein Pylon bis 3. Tippe auf den Node, dann auf das Ziel.' },
-  { blue: { t: 'place', at: 5 }, say: 'Blau baut oben aus …' },
-  { blue: { t: 'place', at: 12 }, say: '… und übersieht die Gefahr in der Ecke.' },
-  { title: 'Einkreisen', a: { t: 'place', at: 18 },
-    text: 'Schneidet deine Kette aus <b>Nodes und Pylonen</b> ein Gebiet von höchstens ' + E.ENC_MAX + ' Punkten ab, werden die Gegner darin getroffen. Schliesse die Lücke.',
-    done: 'Die <b>orange Fläche</b> zeigt, was am Zugende eingekreist wird.' },
-  { title: 'Zug beenden', a: { t: 'end' },
-    text: 'Eingekreist wird <b>am Zugende</b>. Tippe auf <b>«Zug beenden»</b>.',
-    done: 'Getroffen! Nodes verschwinden, Pylone und Helden werden zu Nodes.' },
-  { info: true, final: true, title: 'Geschafft!',
-    text: 'Das sind die Grundlagen. Du gewinnst, wenn der Gegner keine Figur mehr hat, sonst nach dem Rundenlimit mit mehr Punkten (Node 1, Pylon 2, Held 3). Mehr in den Regeln.' },
+const actIcon = (sz = 12) => `<svg class="acti" width="${sz}" height="${sz}" viewBox="0 0 12 12" aria-hidden="true"><circle cx="6" cy="6" r="4.6" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="6" cy="6" r="2.2" fill="currentColor"/></svg>`;
+const costTag = n => `<span class="cost" aria-label="${n} ${n === 1 ? 'Aktion' : 'Aktionen'}">${actIcon()}${n}</span>`;
+const LEVELS_TUT = [
+  { name: 'Nodes und Einkreisen', sub: 'Legen, Stapeln, Ziehen, Einkreisen', flags: { noHeroes: true, noRemove: true }, bluePot: 6,
+    goal: 'Fege alle blauen Figuren vom Feld.',
+    steps: [
+      { info: true, title: 'Level 1: Die Grundlagen', text: 'Du spielst <b style="color:' + ME_COL + '">Orange</b> gegen Blau. Ziel: <b>Fege alle gegnerischen Figuren vom Feld.</b><br>Jeder Zug hat <b>2 Aktionen</b> (die Punkte oben). Deine Nodes kommen aus deinem <b>Pot</b>.' },
+      { title: 'Ersten Node legen', a: { t: 'place', at: 24 }, text: 'Dein erster Node muss an den <b>Rand</b> des Feldes. Tippe auf den weissen Ring.' },
+      { title: 'Netz bauen', a: { t: 'place', at: 25 }, text: 'Jeder weitere Node muss über eine <b>Linie</b> an eine eigene Figur grenzen. So wächst dein Netz. Nach 2 Aktionen ist Blau dran.' },
+      { blue: { t: 'place', at: 0 }, say: 'Blau beginnt in der Ecke …' },
+      { blue: { t: 'place', at: 5 }, say: '… und baut an.' },
+      { title: 'Stapeln: der Pylon', a: { t: 'stack', at: 25 }, text: 'Legst du einen Node aus dem Pot auf einen eigenen Node, wird er zum <b>Pylon</b>. Ein Pylon zählt <b>2 Punkte</b>, zieht <b>weit</b> und wird später zum <b>Helden</b>. Tippe deinen Node an, dann <b>«Stapeln»</b>.' },
+      { title: 'Ziehen', a: { t: 'move', from: 25, to: 11 }, text: 'Statt zu legen, kannst du <b>ziehen</b>: ein Node 1 Feld, ein Pylon <b>bis 3 Felder</b> über freie Punkte. Tippe den Pylon an und zieh ihn nahe an Blau.' },
+      { blue: { t: 'stack', p: 1, at: 5 }, say: 'Blau baut einen Pylon …' },
+      { blue: { t: 'move', p: 1, from: 5, to: 12 }, say: '… und zieht ihn weg. Der Node in der Ecke steht jetzt allein.' },
+      { title: 'Einkreisen', a: { t: 'place', at: 5 }, text: 'Der blaue Node in der Ecke hat nur noch einen freien Nachbarn. <b>Schliesse die Lücke</b> mit einem Node.' },
+      { title: 'Zug beenden', a: { t: 'end' }, text: 'Getroffen wird erst <b>am Ende deines Zuges</b>. Du musst nicht beide Aktionen nutzen: Tippe <b>«Zug beenden»</b>.' },
+      { info: true, title: 'Eingekreist!', text: 'Deine <b>Nodes und Pylone</b> bilden mit dem Rand eine Mauer. Schneidet sie ein Gebiet von <b>höchstens ' + E.ENC_MAX + ' Punkten</b> ab, wird jede gegnerische Figur darin am Zugende getroffen (ab Runde 3):<br>· <b>Node</b>: fällt weg.<br>· <b>Pylon</b>: wird zum Node mit rotem Ring. Bleibt er eingeschlossen, fällt er am Ende deines nächsten Zuges.' },
+      { free: true, title: 'Jetzt du!', text: 'Pro Aktion: <b>Node legen</b>, <b>Stapeln</b> oder <b>Ziehen</b> (Node 1, Pylon bis 3 Felder). <b>«Zug beenden»</b> geht jederzeit. Kreise Blau ein, bis keine blaue Figur mehr steht. Blau bekommt hier keine Nodes zurück.' },
+    ] },
+  { name: 'Helden', sub: 'Pylone werden zu Helden', flags: { noRemove: true }, bluePot: 6,
+    goal: 'Fege alle blauen Figuren vom Feld.',
+    setup: s => { s.round = 3; s.placed = [true, true]; [24, 25, 33].forEach(i => { s.cells[i] = { p: 0, k: 'node' }; }); s.cells[26] = { p: 0, k: 'pylon' }; [30, 29, 28, 27].forEach(i => { s.cells[i] = { p: 1, k: 'node' }; }); s.pot[0] -= 5; },
+    steps: [
+      { info: true, title: 'Level 2: Helden', text: 'Ab <b>Runde 3</b> kannst du einen <b>Pylon</b> zum <b>Helden</b> machen (1 Aktion). Deine 3 Helden stehen unten. Jeder hat <b>zwei Fähigkeiten</b>, ihre Kosten zeigt das Symbol ' + actIcon() + '.' },
+      { title: 'Held rufen', a: { t: 'hero', at: 26, h: 'titan' }, text: 'Tippe unten auf den <b>Titan</b>. Er steigt auf deinen Pylon.' },
+      { title: 'Fähigkeit nutzen', a: { t: 'ability', from: 26, kind: 'n', target: 27 }, text: 'Tippe den Titan an, dann <b>«Plasmaklinge»</b> ' + costTag(1) + ' und den blauen Node daneben.' },
+      { info: true, title: 'Was Helden können', text: '· <b>Ziehen</b>: 1 Feld (der Interceptor fliegt weiter).<br>· <b>Fähigkeiten</b>: zerstören, schützen, übernehmen … Tippe einen Helden an, um sie zu sehen.<br>· Ein Held zählt <b>3 Punkte</b>, gehört aber <b>nicht zur Mauer</b> beim Einkreisen.<br>· Getroffen wird er zum Node und kann erst nach einer Runde neu gerufen werden.' },
+      { free: true, title: 'Jetzt du!', text: 'Pro Aktion: <b>Legen</b>, <b>Stapeln</b>, <b>Ziehen</b>, <b>Held rufen</b> oder eine <b>Fähigkeit</b>. Fege Blau vom Feld. Auch Blau kann Helden rufen.' },
+    ] },
+  { name: 'Alles zusammen', sub: 'Punkte entfernen, volles Feld', flags: {}, bluePot: 8, keepReturn: true,
+    goal: 'Gewinne die Partie.',
+    setup: s => { s.round = 3; s.placed = [true, true]; [24, 25, 33].forEach(i => { s.cells[i] = { p: 0, k: 'node' }; }); s.cells[26] = { p: 0, k: 'pylon' }; [30, 29, 22, 21].forEach(i => { s.cells[i] = { p: 1, k: 'node' }; }); s.pot[0] -= 5; },
+    steps: [
+      { info: true, title: 'Level 3: Das ganze Spiel', text: 'Jetzt gelten alle Regeln. Neu ist <b>Punkt entfernen</b>: Ein leerer Punkt verschwindet samt seinen Linien. So machst du Gebiete kleiner und Mauern kürzer.' },
+      { title: 'Punkt entfernen', a: { t: 'remove', at: 51 }, text: 'Tippe auf <b>«Punkt entfernen»</b>, dann auf den markierten Punkt. Erlaubt: leere Punkte ohne gegnerischen Nachbarn, <b>1× pro Zug</b>, und das Feld muss zusammenhängend bleiben.' },
+      { info: true, title: 'Stapel und Spielende', text: '· Getroffene Figuren legen ihre Nodes auf den <b>Stapel</b> (Node 1, Pylon und Held 2). Zu Beginn deines übernächsten Zuges kehren sie in den Pot zurück.<br>· Ist <b>kein Punkt mehr frei</b>, endet die Partie: Es zählen <b>Node 1, Pylon 2, Held 3</b>.<br>· Wer keine Figur mehr hat, verliert sofort.' },
+      { free: true, title: 'Jetzt du!', text: 'Alle Aktionen sind frei. Gewinne: Fege Blau vom Feld oder habe mehr Punkte, wenn das Feld voll ist.' },
+    ] },
 ];
-function startTutorial() {
-  closeNet();
+let tutDone = []; try { tutDone = JSON.parse(localStorage.getItem('nodes-tut') || '[]'); } catch {}
+function tutMenuScreen() {
+  return `<div class="screen"><div class="top"><button class="icon" data-act="leave" aria-label="Zurück">${backIcon}</button><h2>Tutorial</h2></div>
+  <div class="stack" style="margin-top:2vh">${LEVELS_TUT.map((L, k) => `<button class="btn levelbtn" data-act="tutLevel" data-l="${k}"><span><b>Level ${k + 1}: ${L.name}</b><small>${L.sub}</small></span>${tutDone.includes(k) ? '<span class="ok">✓</span>' : ''}</button>`).join('')}</div></div>`;
+}
+function startTutorial() { closeNet(); G.mode = null; G.state = null; G.screen = 'tutmenu'; render(); }
+function startLevel(k) {
+  G.gen = (G.gen || 0) + 1;
+  const L = LEVELS_TUT[k];
   let s = E.newGame(2);
-  s = E.apply(s, { t: 'setup', p: 0, clock: 0, tier: 1, goal: 'classic', rounds: 30 });
+  s = E.apply(s, { t: 'setup', p: 0, clock: 0, tier: 1, goal: 'classic' });
   s = E.apply(s, { t: 'pick', p: 0, heroes: TUT_HEROES });
   s = E.apply(s, { t: 'pick', p: 1, heroes: ['titan', 'sniper', 'hacker'] });
-  Object.assign(G, { mode: 'tutorial', me: 0, log: [], picks: [], aura: null, sel: null, pending: null, screen: 'game', menu: false, viewBoard: false, tut: { i: 0, lastDone: '', busy: false } });
+  s = JSON.parse(JSON.stringify(s));
+  Object.assign(s, L.flags, L.keepReturn ? {} : { noReturn: [1] });
+  s.pot[1] = L.bluePot;
+  if (L.setup) L.setup(s);
+  if (L.setup) s.pot[1] -= s.cells.filter(c => c && c.p === 1).length;
+  Object.assign(G, { mode: 'tutorial', me: 0, log: [], picks: [], aura: null, sel: null, pending: null, screen: 'game', menu: false, viewBoard: false, aiBusy: false, tut: { lvl: k, i: 0, lastDone: '', busy: false, free: false } });
   setState(s, false); setMsg(''); render();
 }
-const tutStep = () => TUT[G.tut.i];
-// Stimmt die Aktion genau mit der Vorgabe überein?
+const tutSteps = () => LEVELS_TUT[G.tut.lvl].steps;
+const tutStep = () => tutSteps()[G.tut.i];
 const tutMatch = (a, e) => Object.keys(e).every(k => a[k] === e[k]);
 function tutAdvance() {
-  G.tut.i = Math.min(G.tut.i + 1, TUT.length - 1);
+  G.tut.i = Math.min(G.tut.i + 1, tutSteps().length - 1);
   const st = tutStep();
+  if (st.free) { G.tut.free = true; render(); maybeAI(); return; }
   if (st.blue) {
     G.tut.busy = true; render();
     setTimeout(() => {
       try { setState(E.apply(G.state, { ...st.blue, p: 1 })); } catch (e) { setMsg('Tutorial-Fehler: ' + e.message, true); }
       G.tut.busy = false; tutAdvance();
-    }, 1100);
+    }, 1000);
     return;
   }
   render(); window.scrollTo(0, 0);
@@ -234,27 +264,39 @@ function tutAct(a, next) {
   if (!tutMatch(a, st.a)) { setMsg('Nur die angesagte Aktion ist möglich. Achte auf den weissen Ring.', true); G.sel = null; G.pending = null; return render(); }
   G.sel = null; G.pending = null; setMsg('');
   G.log.push(a); setState(next);
-  G.tut.lastDone = st.done || '';
+  G.tut.lastDone = '';
   tutAdvance();
 }
 function coachBox() {
-  const t = G.tut, st = tutStep();
+  const t = G.tut, st = tutStep(), L = LEVELS_TUT[t.lvl];
   if (st.blue) return `<div class="coach"><div class="ct"><b style="color:${OPP_COL}">Blau ist am Zug</b></div><div class="cx pulse">${st.say}</div></div>`;
-  const n = TUT.filter(x => !x.blue).length, k = TUT.slice(0, t.i + 1).filter(x => !x.blue).length;
-  const prev = t.lastDone ? `<div class="ok">✓ ${t.lastDone}</div>` : '';
-  const btns = st.final
-    ? `<button class="btn small primary" data-act="tutPlay">Gegen den Computer spielen</button><button class="btn small" data-act="leave">Zum Menü</button>`
-    : (st.info ? `<button class="btn small primary" data-act="tutNext">Weiter</button>` : '') + `<button class="btn small" data-act="leave">Beenden</button>`;
-  return `<div class="coach"><div class="ct"><span class="muted">${k}/${n}</span> <b>${st.title}</b></div>${prev}<div class="cx">${st.text}</div><div class="cb">${btns}</div></div>`;
+  if (t.free) {
+    const blue = G.state.cells.filter(c => c && c.p === 1 && E.isFig(c)).length;
+    return `<div class="coach"><div class="ct"><span class="muted">Level ${t.lvl + 1}</span> <b>${L.goal}</b></div>${t.i === tutSteps().length - 1 && !t.hideTip ? `<div class="cx">${st.text}</div>` : ''}<div class="cb"><span class="muted" style="align-self:center">Blau: ${blue} Fig. · Pot ${G.state.pot[1]}</span>${t.hideTip ? '' : '<button class="btn small" data-act="tutTip">Ausblenden</button>'}<button class="btn small" data-act="tutMenu">Beenden</button></div></div>`;
+  }
+  const btns = (st.info ? `<button class="btn small primary" data-act="tutNext">Weiter</button>` : '') + `<button class="btn small" data-act="tutMenu">Beenden</button>`;
+  return `<div class="coach"><div class="ct"><b>${st.title}</b></div><div class="cx">${st.text}</div><div class="cb">${btns}</div></div>`;
 }
 function tutHL() {
-  if (G.mode !== 'tutorial' || G.tut.busy) return [];
+  if (G.mode !== 'tutorial' || !G.tut || G.tut.busy || G.tut.free) return [];
   const e = tutStep().a;
   if (!e) return [];
   const picked = G.sel === e.from || (G.pending && G.pending.from === e.from);
   return [e.at, e.from, e.target, e.to].filter(x => x !== undefined && ((x !== e.to && x !== e.target) || picked));
 }
-function tutNext() { G.tut.lastDone = ''; tutAdvance(); }
+function tutNext() { tutAdvance(); }
+function tutOver() {
+  const s = G.state, win = s.winner === 0, k = G.tut.lvl;
+  if (win && !tutDone.includes(k)) { tutDone.push(k); try { localStorage.setItem('nodes-tut', JSON.stringify(tutDone)); } catch {} }
+  const nextBtn = win && k < LEVELS_TUT.length - 1 ? `<button class="btn primary" data-act="tutLevel" data-l="${k + 1}">Level ${k + 2}</button>` : '';
+  const last = win && k === LEVELS_TUT.length - 1;
+  return `<div class="overlay"><div class="dialog"><h2 style="color:${win ? ME_COL : 'var(--text)'}">${win ? 'Level geschafft!' : s.winner === null ? 'Unentschieden' : 'Verloren'}</h2>
+  <p class="muted" style="margin:0">${last ? 'Du kennst jetzt das ganze Spiel. Viel Spass!' : win ? 'Weiter zum nächsten Level.' : 'Versuch es nochmal.'}</p>
+  ${nextBtn}${last ? '<button class="btn primary" data-act="tutPlay">Gegen den Computer spielen</button>' : ''}
+  ${win ? '' : `<button class="btn primary" data-act="tutLevel" data-l="${k}">Nochmal</button>`}
+  <button class="btn" data-act="viewBoard">Spielfeld ansehen</button>
+  <button class="btn" data-act="tutMenu">Zur Übersicht</button></div></div>`;
+}
 
 // ---------- App installieren (nur auf der Cloudflare-Seite, nicht im Chat) ----------
 const isStandalone = () => (window.matchMedia && matchMedia('(display-mode: standalone)').matches) || navigator.standalone === true;
@@ -291,25 +333,24 @@ function startScreen() {
   </div></div>${G.installHelp ? installHelp() : ''}`;
 }
 
+// Symbol für eine Aktion (passt zu den Aktionspunkten oben)
+const abLine = (h, k) => { const A = E.HEROES[h][k]; return `<div class="abx"><div class="abh"><b>${A.name}</b>${costTag(E.abilityCost(h, k))}</div><div class="abd">${A.desc}</div></div>`; };
 function heroCard(h, extra = '') {
   const H = E.HEROES[h];
   return `<div class="hn"><span class="badge">${heroIcon(h, 20)}</span><h3 style="font-size:18px">${H.name}</h3><span class="role">${H.role}</span></div>
   ${H.move ? `<div class="ab muted">${H.move}</div>` : ''}${H.passive ? `<div class="ab muted">${H.passive}</div>` : ''}
-  <div class="ab"><b>${H.n.name}</b> · ${E.abilityCost(h, 'n')} Aktion${E.abilityCost(h, 'n') > 1 ? 'en' : ''} – ${H.n.desc}</div>
-  <div class="ab"><b>${H.s.name}</b> · ${E.abilityCost(h, 's')} Aktion${E.abilityCost(h, 's') > 1 ? 'en' : ''} – ${H.s.desc}</div>${extra}`;
+  ${abLine(h, 'n')}${abLine(h, 's')}${extra}`;
 }
 
 function rulesScreen() {
   const mini = (k, h) => `<svg aria-hidden="true" width="34" height="34" viewBox="-17 -17 34 34" style="flex:none">${pieceSvg({ p: G.me, k, h }, 0, 0)}</svg>`;
   const opp = `<svg aria-hidden="true" width="34" height="34" viewBox="-17 -17 34 34" style="flex:none">${pieceSvg({ p: G.me === 0 ? 1 : 0, k: 'node' }, 0, 0)}</svg>`;
-  const cost = (h, k) => { const c = E.abilityCost(h, k); return c === 1 ? '1 Aktion' : '2 Aktionen'; };
   const heroes = E.HERO_IDS.map(h => {
     const H = E.HEROES[h];
     return `<div class="hcard"><div class="hn"><span class="badge">${heroIcon(h, 20)}</span><h3 style="font-size:18px;margin:0;color:var(--text)">${H.name}</h3><span class="role">${H.role}</span></div>
     <div class="ab"><b>Bewegung:</b> ${H.move || '1 Feld.'}</div>
     ${H.passive ? `<div class="ab"><b>Passiv:</b> ${H.passive.replace(/^[^:]+: /, '')}</div>` : ''}
-    <div class="ab"><b>${H.n.name}</b> (${cost(h, 'n')}): ${H.n.desc}</div>
-    <div class="ab"><b>${H.s.name}</b> (${cost(h, 's')}): ${H.s.desc}</div></div>`;
+    ${abLine(h, 'n')}${abLine(h, 's')}</div>`;
   }).join('');
   return `<div class="screen rules">
   <div class="top"><button class="icon" data-act="back" aria-label="Zurück">${backIcon}</button><h2>Spielregeln</h2></div>
@@ -346,6 +387,7 @@ function rulesScreen() {
   <li><b>Stapeln:</b> Node aus dem Pot auf einen eigenen Node. Er wird zum Pylon.</li>
   <li><b>Held rufen</b> (ab Runde ${E.HERO_ROUND}): Pylon wird zum Helden. Ein zerstörter Held wartet eine Runde.</li>
   <li><b>Ziehen:</b> Node 1 Feld, Pylon bis 3 Felder über freie Punkte, Held 1 Feld (Ausnahmen siehe Helden).</li>
+  <li><b>Punkt entfernen</b> (höchstens 1 pro Zug): Ein leerer Punkt verschwindet samt seinen Linien. Er darf an keine gegnerische Figur grenzen, und das Feld muss zusammenhängend bleiben. Entfernte Punkte wirken wie der Rand.</li>
   <li><b>Fähigkeit:</b> 1 oder 2 Aktionen, steht auf dem Knopf.</li></ul>
   <div class="box"><b>Bedienung:</b> Markierten Punkt antippen, um zu legen. Eigene Figur antippen, um sie zu wählen: Ziele werden markiert, Knöpfe erscheinen unten. Rot markiert sind Angriffsziele.</div>
 
@@ -391,8 +433,7 @@ function rulesScreen() {
 
   <h3>14 · Spielende</h3>
   <ul><li>Wer keine Figur mehr auf dem Feld hat, verliert.</li>
-  <li><b>Rundenlimit</b> (10 bis 50, Standard ${E.ROUND_LIMIT}): Danach zählen die Punkte: <b>Node 1, Pylon 2, Held 3</b>. Gleichstand ist unentschieden.</li>
-  <li><b>Endphase:</b> In den letzten ${E.ENDPHASE} Runden kehrt nichts mehr vom Stapel zurück.</li>
+  <li><b>Volles Feld:</b> Ist am Ende eines Zuges kein Punkt mehr frei, zählen die Punkte: <b>Node 1, Pylon 2, Held 3</b>. Gleichstand ist unentschieden. Unter dem Feld steht, wie viele Punkte noch frei sind.</li>
   <li>Aufgeben über das Menü ☰.</li></ul>
 
   <h3>15 · Multiplayer</h3>
@@ -408,7 +449,7 @@ function rulesScreen() {
   <li><b>Brücke:</b> Verbinde deine zwei Rauten mit einer Kette aus Nodes und Pylonen. Der Weg ist frei. Gegnerische Rauten und ihre Nachbarpunkte sind für dich gesperrt.</li>
   <li><b>Leuchtfeuer:</b> Hältst du ab Runde ${E.BEACON_ROUND} zu Beginn deines Zuges die Mehrheit der Leuchtfeuer (2 von 3, im Multiplayer 3 von 4), gewinnst du.</li>
   <li><b>Kern:</b> Dein erster Node ist dein Kern. Er zieht nicht, wird nicht gestapelt und ist immun gegen Fähigkeiten. Wird er eingekreist, scheidest du aus.</li></ul>
-  <p>Bei Brücke und Leuchtfeuer hat der Startspieler im ersten Zug nur 1 Aktion.</p>
+  <p>Bei Brücke und Leuchtfeuer hat der Startspieler im ersten Zug nur 1 Aktion. Leuchtfeuer, Rauten und ihre Nachbarpunkte können nicht entfernt werden, und die Rauten jedes Spielers müssen über das Feld verbindbar bleiben.</p>
 
   <h3>17 · Tipps</h3>
   <ul><li>Baue früh Pylone: Sie ziehen weit und werden zu Helden.</li>
@@ -417,14 +458,14 @@ function rulesScreen() {
   <li>Tippe gegnerische Figuren an: Rot markiert zeigt, was dir droht.</li></ul>
 
   <h3>Kurzübersicht</h3>
-  <div class="box"><b>Zug:</b> 2 Aktionen: Legen · Stapeln · Held rufen · Ziehen · Fähigkeit<br>
+  <div class="box"><b>Zug:</b> 2 Aktionen: Legen · Stapeln · Held rufen · Ziehen · Punkt entfernen · Fähigkeit<br>
   <b>Start:</b> erster Node an den Rand, danach neben eigene Figuren<br>
   <b>Runde 1–2:</b> keine Helden, kein Einkreisen<br>
   <b>Einkreisen:</b> Kette aus Nodes und Pylonen, Gebiet höchstens ${E.ENC_MAX} Punkte, am Zugende<br>
   <b>Treffer:</b> Node weg · Pylon und Held werden Node (roter Ring)<br>
   <b>Stapel:</b> Nodes kehren nach einer Runde in den Pot zurück<br>
-  <b>Ende:</b> Gegner ohne Figur, sonst Punkte nach dem Rundenlimit (Node 1 · Pylon 2 · Held 3)<br>
-  <b>Endphase:</b> letzte ${E.ENDPHASE} Runden ohne Rückkehr vom Stapel</div>
+  <b>Punkt entfernen:</b> 1 pro Zug, nicht neben Gegnern, Feld bleibt zusammenhängend<br>
+  <b>Ende:</b> Gegner ohne Figur, sonst Punkte bei vollem Feld (Node 1 · Pylon 2 · Held 3)</div>
   <div style="height:28px"></div></div>`;
 }
 const backIcon = '<svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg>';
@@ -445,7 +486,6 @@ function lobbyScreen() {
   return `<div class="screen">${back}
     <div class="stack" style="margin-top:6vh">
       ${clockPicker()}
-      ${roundPicker()}
       ${advToggle()}
       ${goalPicker()}
       <button class="btn primary" data-act="create">Raum erstellen</button>
@@ -468,7 +508,6 @@ function mlobbyScreen() {
         <div class="muted" style="font-size:13px">${G.mn === 3 ? 'Alle gegen alle, je 15 Nodes.' : 'Zwei Teams, je 12 Nodes pro Spieler.'}</div></div>
       <div class="clockset"><label for="namein"><b>Dein Name</b></label><input id="namein" class="namein" maxlength="14" autocomplete="nickname" value="${esc(G.name)}" placeholder="z. B. Benjamin"></div>
       ${clockPicker()}
-      ${roundPicker()}
       ${advToggle()}
       ${goalPicker()}
       <button class="btn primary" data-act="mcreate">Raum erstellen</button>
@@ -509,7 +548,7 @@ function mlobbyScreen() {
       <div style="text-align:center"><p class="muted" style="margin:0">Raumcode</p><div class="code" style="margin:6px 0 4px">${esc(G.code)}</div>
       <p class="muted" style="margin:0 0 8px;font-size:14px">Die anderen tippen auf «Multiplayer» und geben diesen Code ein.</p>
       ${G.net && G.net.shareUrl ? `<button class="btn small" data-act="share">Link teilen</button>` : ''}</div>
-      <p class="muted" style="margin:8px 0 0;font-size:13px;text-align:center">${s.mode === 'team' ? '2 gegen 2' : '3 Spieler, alle gegen alle'} · ${E.limitOf(s)} Runden · Uhr: ${s.clock ? clockLabel(s.clock.minutes) : 'Aus'} · ${E.TIERS[E.tierOf(s)]} · ${E.GOALS[s.goal || 'classic']}</p>
+      <p class="muted" style="margin:8px 0 0;font-size:13px;text-align:center">${s.mode === 'team' ? '2 gegen 2' : '3 Spieler, alle gegen alle'} · Uhr: ${s.clock ? clockLabel(s.clock.minutes) : 'Aus'} · ${E.TIERS[E.tierOf(s)]} · ${E.GOALS[s.goal || 'classic']}</p>
       ${seats}
       ${host && bots ? `<div class="clockset"><span style="font-size:15px">Computer</span><div class="seg" role="radiogroup" aria-label="Spielstufe">${Object.entries(LEVELS).map(([k, v]) => `<button class="segbtn ${G.level === k ? 'on' : ''}" role="radio" aria-checked="${G.level === k}" data-act="level" data-l="${k}">${v}</button>`).join('')}</div></div>` : ''}
       ${foot}
@@ -531,8 +570,8 @@ function pickScreen() {
   const ready = n === 3 && (!adv || G.aura);
   const count = h => G.picks.filter(x => x === h).length;
   const settings = G.mode === 'single'
-    ? `<div class="clockset"><span style="font-size:15px">Computer</span><div class="seg" role="radiogroup" aria-label="Spielstufe">${Object.entries(LEVELS).map(([k, v]) => `<button class="segbtn ${G.level === k ? 'on' : ''}" role="radio" aria-checked="${G.level === k}" data-act="level" data-l="${k}">${v}</button>`).join('')}</div></div>` + clockPicker() + roundPicker() + advToggle() + goalPicker()
-    : `<p class="muted" style="margin:0 0 12px">${E.limitOf(st)} Runden · Uhr: ${st && st.clock ? clockLabel(st.clock.minutes) : 'Aus'} · ${E.TIERS[tierNow()]} · ${E.GOALS[goalNow()]}</p>`;
+    ? `<div class="clockset"><span style="font-size:15px">Computer</span><div class="seg" role="radiogroup" aria-label="Spielstufe">${Object.entries(LEVELS).map(([k, v]) => `<button class="segbtn ${G.level === k ? 'on' : ''}" role="radio" aria-checked="${G.level === k}" data-act="level" data-l="${k}">${v}</button>`).join('')}</div></div>` + clockPicker() + advToggle() + goalPicker()
+    : `<p class="muted" style="margin:0 0 12px">Uhr: ${st && st.clock ? clockLabel(st.clock.minutes) : 'Aus'} · ${E.TIERS[tierNow()]} · ${E.GOALS[goalNow()]}</p>`;
   const chosen = `<div class="chosen">${[0, 1, 2].map(k => G.picks[k] ? `<span class="slot on">${heroIcon(G.picks[k], 16)} ${E.HEROES[G.picks[k]].name}</span>` : '<span class="slot">frei</span>').join('')}${adv ? (G.aura ? `<span class="slot on aura">${E.AURAS[G.aura].name}</span>` : '<span class="slot aura">Aura</span>') : ''}</div>`;
   const auraList = adv ? `<h3 class="sect">Aura wählen</h3><div class="grid">${E.AURA_IDS.map(a => `<button class="cardbtn ${G.aura === a ? 'on' : ''}" data-act="aura" data-a="${a}" aria-pressed="${G.aura === a}"><div class="hn"><span class="badge aurab">${auraIcon}</span><h3 style="font-size:17px">${E.AURAS[a].name}</h3></div><div class="ab">${E.AURAS[a].desc}</div></button>`).join('')}</div>` : '';
   return `<div class="screen">
@@ -585,8 +624,8 @@ function goalHint() {
   const gapTxt = g => (g === Infinity ? 'blockiert' : g === 0 ? 'fertig' : `noch ${g}`);
   if (s.anchors && me !== null) out.push(`Brücke: du ${gapTxt(E.bridgeGap(s, me))} · ${others.map(t => `${esc(teamName(t))} ${gapTxt(E.bridgeGap(s, t))}`).join(' · ')}`);
   if (s.beacons && me !== null) out.push(`Leuchtfeuer: du ${E.beaconsHeld(s, me)}/${s.beacons.length} · ${others.map(t => `${esc(teamName(t))} ${E.beaconsHeld(s, t)}`).join(' · ')}${s.round < E.BEACON_ROUND ? ` (zählt ab Runde ${E.BEACON_ROUND})` : ` · ${E.beaconNeed(s)} zum Sieg`}`);
-  if (E.inEndphase(s)) out.push('<b>Endphase:</b> Geschlagene Figuren kommen nicht mehr zurück');
-  else if (s.round === E.limitOf(s) - E.ENDPHASE) out.push('Ab nächster Runde Endphase');
+  const free = s.cells.filter(c => !c).length;
+  out.push(`Noch ${free} freie Punkte`);
   return out.length ? `<div class="zonehint muted">${out.join('<br>')}</div>` : '';
 }
 function zoneHint() {
@@ -606,19 +645,21 @@ function boardSvg() {
   const tgt = new Set(), atk = new Set();
   if (my && G.pending) G.pending.targets.forEach(i => (s.cells[i] ? atk : tgt).add(i));
   else if (my && G.sel === null) E.placeTargets(s, G.me).forEach(i => tgt.add(i));
-  if (G.mode === 'tutorial') { const ok = new Set(tutHL()); [...tgt].forEach(i => { if (!ok.has(i)) tgt.delete(i); }); [...atk].forEach(i => { if (!ok.has(i)) atk.delete(i); }); }
+  if (G.mode === 'tutorial' && !G.tut.free) { const ok = new Set(tutHL()); [...tgt].forEach(i => { if (!ok.has(i)) tgt.delete(i); }); [...atk].forEach(i => { if (!ok.has(i)) atk.delete(i); }); }
   const now = performance.now();
   let o = `<svg role="img" aria-label="Spielfeld" viewBox="${minx} ${miny} ${w} ${h}"><defs>${HALO}</defs>`;
-  B.edges.forEach(([a, b]) => { const A = B.points[a], C = B.points[b]; o += `<line x1="${A.x}" y1="${A.y}" x2="${C.x}" y2="${C.y}" stroke="#34446F" stroke-width="1.6" stroke-linecap="round"/>`; });
+  const isHole = i => s.cells[i] && s.cells[i].k === 'hole';
+  B.edges.forEach(([a, b]) => { if (isHole(a) || isHole(b)) return; const A = B.points[a], C = B.points[b]; o += `<line x1="${A.x}" y1="${A.y}" x2="${C.x}" y2="${C.y}" stroke="#34446F" stroke-width="1.6" stroke-linecap="round"/>`; });
   zones(s).forEach(z => { z.comp.forEach(j => { const pt = B.points[j]; o += `<circle cx="${pt.x}" cy="${pt.y}" r="21" fill="${col(z.X)}" opacity=".16"/>`; }); });
-  B.points.forEach((pt, i) => { if (!s.cells[i] || (FX.hide.get(i) || 0) > now) o += `<circle cx="${pt.x}" cy="${pt.y}" r="3.2" fill="#7F8FBF"/>`; });
+  B.points.forEach((pt, i) => { if (isHole(i)) o += `<path d="M${pt.x - 3} ${pt.y - 3}l6 6M${pt.x + 3} ${pt.y - 3}l-6 6" stroke="#34446F" stroke-width="1.4" stroke-linecap="round"/>`; else if (!s.cells[i] || (FX.hide.get(i) || 0) > now) o += `<circle cx="${pt.x}" cy="${pt.y}" r="3.2" fill="#7F8FBF"/>`; });
   (s.mines || []).filter(m => G.me >= 0 && !E.foe(s, m.p, G.me) && !s.cells[m.at]).forEach(m => { const pt = B.points[m.at]; o += `<g aria-label="${m.p === G.me ? 'Deine Mine' : 'Mine deines Partners'}"><circle cx="${pt.x}" cy="${pt.y}" r="8" fill="none" stroke="${col(m.p)}" stroke-width="1.5" stroke-dasharray="2 2"/><path d="M${pt.x - 4} ${pt.y - 4}l8 8M${pt.x + 4} ${pt.y - 4}l-8 8" stroke="${col(m.p)}" stroke-width="1.6"/></g>`; });
   if (s.anchors) Object.entries(s.anchors).forEach(([t, pts]) => { const q = s.team.indexOf(+t) >= 0 ? s.team.indexOf(+t) : +t; const cc = col(q); E.anchorZone(s, +t).filter(i => !pts.includes(i)).forEach(i => { const pt = B.points[i]; o += `<circle cx="${pt.x}" cy="${pt.y}" r="7" fill="${cc}" fill-opacity=".14"/>`; }); pts.forEach(i => { const pt = B.points[i]; o += `<g aria-label="Brückenziel"><rect x="${pt.x - 13}" y="${pt.y - 13}" width="26" height="26" rx="3" transform="rotate(45 ${pt.x} ${pt.y})" fill="${cc}" fill-opacity=".12" stroke="${cc}" stroke-width="1.8"/></g>`; }); });
   if (s.beacons) s.beacons.forEach(i => { const pt = B.points[i]; o += `<g aria-label="Leuchtfeuer"><circle cx="${pt.x}" cy="${pt.y}" r="15" fill="#E8ECF8" fill-opacity=".07" stroke="#E8ECF8" stroke-width="1.6" stroke-dasharray="2 3"/>${[0, 60, 120, 180, 240, 300].map(d => { const r = d * Math.PI / 180; return `<line x1="${pt.x + Math.cos(r) * 17}" y1="${pt.y + Math.sin(r) * 17}" x2="${pt.x + Math.cos(r) * 21}" y2="${pt.y + Math.sin(r) * 21}" stroke="#E8ECF8" stroke-width="1.6" stroke-linecap="round"/>`; }).join('')}</g>`; });
-  tgt.forEach(i => { const pt = B.points[i]; o += `<circle cx="${pt.x}" cy="${pt.y}" r="10" fill="none" stroke="${ME_COL}" stroke-width="2" stroke-dasharray="3 3"/>`; });
+  const rmMode = G.pending && G.pending.mode === 'remove';
+  tgt.forEach(i => { const pt = B.points[i]; o += rmMode ? `<circle cx="${pt.x}" cy="${pt.y}" r="9" fill="none" stroke="#FF5C7A" stroke-width="1.8" stroke-dasharray="2 2"/>` : `<circle cx="${pt.x}" cy="${pt.y}" r="10" fill="none" stroke="${ME_COL}" stroke-width="2" stroke-dasharray="3 3"/>`; });
   tutHL().forEach(i => { const pt = B.points[i]; if (pt) o += `<circle class="tuthl" cx="${pt.x}" cy="${pt.y}" r="16" fill="none" stroke="#FFFFFF" stroke-width="2"/>`; });
   s.cells.forEach((c, i) => {
-    if (!c || (FX.hide.get(i) || 0) > now) return;
+    if (!c || c.k === 'hole' || (FX.hide.get(i) || 0) > now) return;
     const { x, y } = B.points[i];
     if (G.sel === i) o += `<circle cx="${x}" cy="${y}" r="22" fill="none" stroke="${col(c.p)}" stroke-width="2"/>`;
     if (c.k !== 'wall' && !(c.k === 'hero' && c.h === 'warden') && E.isGuarded(s, i)) o += `<circle cx="${x}" cy="${y}" r="${c.k === 'hero' ? 21 : c.k === 'pylon' ? 17 : 13.5}" fill="none" stroke="${col(c.p)}" stroke-width="1.5" stroke-opacity=".75"/><path d="M${x + 9} ${y - 15.5}l3.2 1.3v2.4c0 2.1-1.4 3.6-3.2 4.4-1.8-.8-3.2-2.3-3.2-4.4v-2.4z" fill="${col(c.p)}" stroke="#0B1020" stroke-width=".8"/>`;
@@ -1164,6 +1205,7 @@ function heroStatus(k) {
 function waitMsg() {
   const s = G.state;
   if (G.mode === 'single') return 'Der Computer überlegt …';
+  if (G.mode === 'tutorial') return 'Blau ist am Zug …';
   if (isMulti()) {
     const who = `${esc(nameOf(s.cur))} ist am Zug${isOnline(s.cur) ? '' : ' (nicht verbunden)'} …`;
     if (G.me < 0) return 'Du schaust zu. ' + who;
@@ -1182,85 +1224,89 @@ function pchip(p) {
     ${clockRuns(p) && !dead ? `<div class="clock ${turn ? 'run' : ''} ${clockLeft(p) < 30000 ? 'low' : ''}" data-p="${p}">${fmt(clockLeft(p))}</div>` : ''}
     ${dead ? '' : `<div class="st hi">${(s.picks[p] || []).map(h => heroIcon(h, 13, '#A3AED0')).join('')}</div>`}</div>`;
 }
-function panel() {
+// Kompakte Steuerung: Kontextzeile (Fähigkeiten), Aktionszeile, Heldenzeile
+function heroSlotCell(k) { return G.state.cells.findIndex(c => c && c.k === 'hero' && E.owner(c) === G.me && c.slot === k); }
+function callSpots(h) {
   const s = G.state;
-  if (s.phase !== 'play') return '';
-  if (!isMyTurn()) {
-    return `<div class="panel"><div class="hint pulse">${waitMsg()}</div></div>`;
-  }
-  const i = G.sel;
-  const c = i === null ? null : s.cells[i];
-  if (!c) {
-    return `<div class="panel"><div class="ttl">Dein Zug</div><div class="hint">Markierten Punkt antippen, um zu legen, oder eigene Figur wählen.${s.pot[G.me] === 0 ? ' Dein Pot ist leer.' : ''}</div></div>`;
-  }
-  if (c.p !== G.me) {
-    const what = c.k === 'hero' ? E.HEROES[c.h].name : E.UNIT_NAME[c.k];
-    if (c.k === 'wall' || c.k === 'drone') return `<div class="panel"><div class="ttl">${shapeIcon(c.p, 14)} ${what} ${whose(c.p)}</div><div class="hint">${c.k === 'wall' ? 'Blockiert bis zum nächsten Zug ihres Besitzers. Unzerstörbar, kein Teil der Kette.' : 'Blockiert den Weg, kein Teil der Kette.'}</div></div>`;
-    return `<div class="panel"><div class="ttl">${shapeIcon(c.p, 14)} ${what} ${whose(c.p)}</div>${c.k === 'hero' ? `<div class="hint">${E.HEROES[c.h].n.name}: ${E.HEROES[c.h].n.desc}<br>${E.HEROES[c.h].s.name}: ${E.HEROES[c.h].s.desc}</div>` : ''}</div>`;
-  }
-  const pm = G.pending ? G.pending.mode : null;
-  if (c.k === 'wall' || c.k === 'drone') {
-    return `<div class="panel"><div class="ttl">${E.UNIT_NAME[c.k]}</div><div class="hint">${c.k === 'wall' ? 'Blockiert bis zu deinem nächsten Zug. Kein Teil der Kette.' : 'Blockiert den Weg, kein Teil der Kette. Explodiert beim Schwarmangriff.'}</div></div>`;
-  }
-  if (c.k === 'node') {
-    return `<div class="panel"><div class="ttl">Node</div><div class="hint">Markiertes Feld antippen, um zu ziehen.</div>
-    <div class="row"><button class="btn" data-act="stack" ${s.pot[G.me] > 0 ? '' : 'disabled'}>Stapeln → Pylon</button></div>${E.canRufNode(s, G.me) && E.availableHeroes(s, G.me).length ? `<div class="hint">Rufbereitschaft (einmal pro Partie): Held direkt aus diesem Node rufen.</div><div class="row">${[...new Set(s.picks[G.me])].map(h => `<button class="btn" data-act="mkhero" data-h="${h}" ${E.availableHeroes(s, G.me).includes(h) ? '' : 'disabled'}>${E.HEROES[h].name}</button>`).join('')}</div>` : ''}</div>`;
-  }
-  if (c.k === 'pylon') {
-    const av = E.availableHeroes(s, G.me);
-    const heroes = [...new Set(s.picks[G.me] || [])].map(h => `<button class="btn" data-act="mkhero" data-h="${h}" ${av.includes(h) ? '' : 'disabled'}>${E.HEROES[h].name}</button>`).join('');
-    return `<div class="panel"><div class="ttl">Pylon</div><div class="hint">Zieht bis 3 Felder oder wird zum Helden${s.round < E.HERO_ROUND ? ` (ab Runde ${E.HERO_ROUND})` : ''}.</div>
-    <div class="row">${heroes}</div></div>`;
-  }
+  if (!E.availableHeroes(s, G.me).includes(h)) return [];
+  const ruf = E.canRufNode(s, G.me);
+  return s.cells.map((c, i) => c && c.p === G.me && (c.k === 'pylon' || (ruf && c.k === 'node')) ? i : -1).filter(i => i >= 0);
+}
+function heroTap(k) {
+  if (!isMyTurn()) return;
+  const s = G.state, h = s.picks[G.me][k];
+  const at = heroSlotCell(k);
+  if (at >= 0) { if (G.sel === at) { G.sel = null; G.pending = null; } else { selectUnit(at); } setMsg(''); return render(); }
+  const spots = callSpots(h);
+  if (!spots.length) { setMsg(s.round < E.HERO_ROUND ? `Helden ab Runde ${E.HERO_ROUND}.` : E.availableHeroes(s, G.me).includes(h) ? 'Du brauchst einen Pylon.' : `${E.HEROES[h].name} wartet noch.`, true); return render(); }
+  if (G.sel !== null && spots.includes(G.sel)) return act({ t: 'hero', at: G.sel, h });
+  if (spots.length === 1) return act({ t: 'hero', at: spots[0], h });
+  G.sel = null; G.pending = { mode: 'call', h, from: -1, targets: spots }; setMsg(`${E.HEROES[h].name}: Pylon wählen.`); render();
+}
+function stepText() {
+  const s = G.state, c = G.sel === null ? null : s.cells[G.sel], P = G.pending;
+  if (!c || c.k !== 'hero' || c.p !== G.me) return '';
+  if (c.stun) return 'EMP: setzt diesen Zug aus.';
+  if (P && (P.mode === 'n' || P.mode === 's')) { const A_ = E.HEROES[P.copy ? c.as : c.h][P.mode]; return A_.steps ? A_.steps[P.chosen.length] || '' : 'Ziel wählen.'; }
+  if (c.lock) return 'Lockdown: nur Ziehen.';
+  return '';
+}
+function abilityRow() {
+  const s = G.state, i = G.sel, c = i === null ? null : s.cells[i];
+  if (!isMyTurn() || !c || c.p !== G.me || c.k !== 'hero') return '';
   const ab = (kind, copy) => {
     const t = copy ? c.as : c.h, H = E.HEROES[t];
     const ok = E.abilityUsable(s, i, kind, copy);
     const on = G.pending && G.pending.mode === kind && !!G.pending.copy === copy;
-    return `<button class="btn ability ${on ? 'on' : ''}" data-act="ability" data-kind="${kind}" data-copy="${copy ? 1 : 0}" ${ok ? '' : 'disabled'}>${H[kind].name}<small>${E.abilityCost(t, kind) === 1 ? '1 Aktion' : '2 Aktionen'}</small></button>`;
+    return `<button class="btn ability ${on ? 'on' : ''}" data-act="ability" data-kind="${kind}" data-copy="${copy ? 1 : 0}" ${ok ? '' : 'disabled'}><span>${H[kind].name}</span>${costTag(E.abilityCost(t, kind))}</button>`;
   };
-  let hint = 'Ziehen oder Fähigkeit wählen.';
-  if (c.stun) hint = 'EMP: Dieser Held setzt diesen Zug aus.';
-  else if (c.lock && !pm) hint = 'Lockdown: nur Ziehen möglich.';
-  else if (pm === 'n' || pm === 's') {
-    const A_ = E.HEROES[G.pending.copy ? c.as : c.h][pm];
-    hint = A_.desc + ' ' + (A_.steps ? A_.steps[G.pending.chosen.length] || '' : 'Tippe auf ein Ziel.');
-  }
-  if (c.orig) hint = `Gehackt: Dieser Held gehört dir noch ${Math.max(1, c.hack - 1)} ${c.hack - 1 === 1 ? 'Zug' : 'Züge'}. ` + hint;
-  const why = ['n', 's'].map(k => (!c.stun && !c.lock && !E.abilityUsable(s, i, k, false) && E.abilityCost(c.h, k) <= s.actions && E.needsTarget(c.h, k) && E.blockedByWarden(s, i, k).length) ? E.HEROES[c.h][k].name : null).filter(Boolean);
-  if (why.length) hint += ` ${why.join(' und ')}: kein Ziel. Alle Ziele stehen im Schutzfeld eines Warden.`;
-  const copyRow = c.as ? `<div class="hint" style="display:flex;align-items:center;gap:6px">${heroIcon(c.as, 16, '#A3AED0')} Kopiert: ${E.HEROES[c.as].name}</div><div class="row">${ab('n', true)}${ab('s', true)}</div>` : '';
   const fin = G.pending && G.pending.chosen && G.pending.chosen.length && E.canFinish(G.pending.copy ? c.as : c.h, G.pending.mode, G.pending.chosen)
-    ? `<div class="row"><button class="btn primary" data-act="finishAbility">Fertig</button></div>` : '';
-  return `<div class="panel"><div class="ttl">${E.HEROES[c.h].name}</div>
-  <div class="hint">${hint}</div>${fin}<div class="row">${ab('n', false)}${ab('s', false)}</div>${copyRow}</div>`;
+    ? `<button class="btn primary" data-act="finishAbility">Fertig</button>` : '';
+  return `<div class="ctl">${ab('n', false)}${ab('s', false)}${c.as ? ab('n', true) + ab('s', true) : ''}${fin}</div>`;
+}
+const trashIcon = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="8" stroke-dasharray="3 3"/><path d="M9 9l6 6M15 9l-6 6"/></svg>';
+const stackIcon = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round" aria-hidden="true"><path d="M12 4l8 4-8 4-8-4z"/><path d="M4 13l8 4 8-4"/></svg>';
+function actionRow() {
+  const s = G.state;
+  if (s.phase !== 'play') return '';
+  const my = isMyTurn(), c = G.sel === null ? null : s.cells[G.sel];
+  let left;
+  if (my && G.pending && (G.pending.mode === 'remove' || G.pending.mode === 'call')) left = `<button class="btn" data-act="cancelRemove">Abbrechen</button>`;
+  else if (my && c && c.p === G.me && c.k === 'node') left = `<button class="btn" data-act="stack" ${s.pot[G.me] > 0 ? '' : 'disabled'}>${stackIcon} Stapeln</button>`;
+  else if (s.noRemove) left = '';
+  else left = `<button class="btn" data-act="startRemove" ${my && E.removeTargets(s, G.me).length ? '' : 'disabled'}>${trashIcon} Punkt entfernen</button>`;
+  return `<div class="ctl">${left}<button class="btn" data-act="end" ${my ? '' : 'disabled'}>Zug beenden</button></div>`;
+}
+function heroRow() {
+  const s = G.state, my = isMyTurn() && s.phase === 'play';
+  return `<div class="hrow">${(s.picks[G.me] || []).map((h, k) => {
+    const at = heroSlotCell(k), on = at >= 0, sel = on && G.sel === at;
+    const ready = !on && callSpots(h).length > 0;
+    const [st] = heroStatus(k);
+    const calling = G.pending && G.pending.mode === 'call' && G.pending.h === h;
+    return `<button class="hbtn ${on ? 'field' : ''} ${sel || calling ? 'sel' : ''} ${ready ? 'ready' : ''}" data-act="heroTap" data-k="${k}" ${my && (on || ready) ? '' : 'disabled'}>${heroIcon(h, 20, on || ready ? '#fff' : '#A3AED0')}<span>${E.HEROES[h].name}</span>${on || ready ? '' : `<small>${st === 'bereit' ? 'kein Pylon' : st}</small>`}</button>`;
+  }).join('')}</div>`;
 }
 
 function gameScreen() {
   const s = G.state;
-  const opp = G.me === 0 ? 1 : 0;
   const left = G.me, right = 1 - G.me;
   const cur = s.cur;
   const dots = [0, 1].map(k => `<span class="dot ${k < s.actions ? 'f' : ''}" style="border-color:${col(cur)};${k < s.actions ? `background:${col(cur)}` : ''}"></span>`).join('');
-  const heroes = (s.picks[G.me] || []).map((h, k) => {
-    const [st, on] = heroStatus(k);
-    return `<div class="hchip"><span class="badge ${on ? '' : 'off'}">${heroIcon(h, 17, on ? '#fff' : '#A3AED0')}</span><span class="hn2">${E.HEROES[h].name}</span><span class="hs">${st}</span></div>`;
-  }).join('');
-  void opp;
   const bar = s.n > 2
-    ? `<div class="mbar"><button class="icon" data-act="menu" aria-label="Menü" style="width:44px;height:36px">${menuIcon}</button><span>Runde ${s.round}/${E.limitOf(s)}${s.mode === 'team' ? ' · 2 gegen 2' : ' · alle gegen alle'}</span><div class="dots" aria-label="${s.actions} Aktionen übrig">${dots}</div></div>
+    ? `<div class="mbar"><button class="icon" data-act="menu" aria-label="Menü" style="width:44px;height:36px">${menuIcon}</button><span>Runde ${s.round}${s.mode === 'team' ? ' · 2 gegen 2' : ' · alle gegen alle'}</span><div class="dots" aria-label="${s.actions} Aktionen übrig">${dots}</div></div>
   <div class="pgrid" style="grid-template-columns:repeat(${s.n},minmax(0,1fr))">${Array.from({ length: s.n }, (_, p) => pchip(p)).join('')}</div>`
     : `<div class="bar">${playerBlock(left, false)}
-    <div class="mid"><button class="icon" data-act="menu" aria-label="Menü" style="width:44px;height:36px">${menuIcon}</button>Runde ${s.round}/${E.limitOf(s)}<div class="dots" aria-label="${s.actions} Aktionen übrig">${dots}</div></div>
+    <div class="mid"><button class="icon" data-act="menu" aria-label="Menü" style="width:44px;height:36px">${menuIcon}</button>Runde ${s.round}<div class="dots" aria-label="${s.actions} Aktionen übrig">${dots}</div></div>
     ${playerBlock(right, true)}</div>`;
-  return `<div class="screen" style="padding:0">
+  const status = s.phase === 'play' && !isMyTurn() ? `<span class="pulse">${waitMsg()}</span>` : esc(G.err ? G.msg : (stepText() || G.msg || s.last || ''));
+  return `<div class="screen game" style="padding:0">
   ${bar}
   ${G.mode === 'tutorial' ? coachBox() : ''}
   <div class="boardwrap">${boardSvg()}</div>
   ${zoneHint()}
-  <div class="status ${G.err ? 'err' : ''}" role="status">${esc(G.msg || s.last || '')}</div>
-  ${panel()}
-  <div class="heroes">${heroes}</div>
-  ${s.phase === 'over' ? '<div class="foot" style="height:64px"></div>' : `<div class="foot"><button class="btn" data-act="end" ${isMyTurn() ? '' : 'disabled'}>Zug beenden</button></div>`}
+  <div class="status ${G.err ? 'err' : ''}" role="status">${status}</div>
+  <div class="controls">${abilityRow()}${actionRow()}${s.phase === 'play' && G.me >= 0 && s.picks[G.me] && !s.noHeroes ? heroRow() : ''}</div>
   </div>`;
 }
 
@@ -1276,10 +1322,11 @@ const viewBar = () => `<div class="viewbar"><button class="btn primary" data-act
 function overOverlay() {
   const s = G.state;
   if (s.n > 2) return overMulti();
+  if (G.mode === 'tutorial') return tutOver();
   const win = s.winner === G.me, draw = s.winner === null;
   return `<div class="overlay"><div class="dialog"><h2 style="color:${win ? ME_COL : 'var(--text)'}">${draw ? 'Unentschieden' : win ? 'Sieg!' : 'Niederlage'}</h2>
   <p class="muted" style="margin:0">${s.endReason === 'rounds'
-    ? `Nach ${E.limitOf(s)} Runden zählen die Punkte (Node 1, Pylon 2, Held 3): Du ${E.score(s, G.me)} · ${names()[1 - G.me]} ${E.score(s, 1 - G.me)}.`
+    || s.endReason === 'full' ? `${s.endReason === 'full' ? 'Das Feld ist voll' : 'Nach sehr vielen Runden'}: Es zählen die Punkte (Node 1, Pylon 2, Held 3). Du ${E.score(s, G.me)} · ${names()[1 - G.me]} ${E.score(s, 1 - G.me)}.`
     : s.endReason === 'time'
     ? `Die Zeit ist abgelaufen. Punkte (Node 1, Pylon 2, Held 3): Du ${E.score(s, G.me)} · ${names()[1 - G.me]} ${E.score(s, 1 - G.me)}.`
     : s.endReason === 'bridge' ? (win ? 'Deine Brücke steht: Anfang und Ende sind verbunden.' : 'Dein Gegner hat seine Brücke geschlagen.')
@@ -1298,7 +1345,7 @@ function overMulti() {
   const teams = [...new Set(Array.from({ length: s.n }, (_, p) => E.teamOf(s, p)))];
   const pts = teams.map(t => `${esc(t === myT && s.mode === 'team' ? 'Dein Team' : teamName(t))} ${E.teamScore(s, t)}`).join(' · ');
   const title = draw ? 'Unentschieden' : win ? 'Sieg!' : G.me < 0 ? `${esc(teamName(s.winner))} gewinnt` : 'Niederlage';
-  const why = s.endReason === 'rounds' ? `Nach ${E.limitOf(s)} Runden zählen die Punkte (Node 1, Pylon 2, Held 3)${s.mode === 'team' ? ' pro Team' : ''}: ${pts}.`
+  const why = s.endReason === 'rounds' || s.endReason === 'full' ? `Das Feld ist voll. Es zählen die Punkte (Node 1, Pylon 2, Held 3)${s.mode === 'team' ? ' pro Team' : ''}: ${pts}.`
     : s.endReason === 'time' ? `Eine Uhr ist abgelaufen. Punkte${s.mode === 'team' ? ' pro Team' : ''}: ${pts}.`
     : s.endReason === 'bridge' ? `${esc(teamName(s.winner))}: Die Brücke steht.`
     : s.endReason === 'beacon' ? `${esc(teamName(s.winner))}: Mehrheit der Leuchtfeuer gehalten.`
@@ -1330,6 +1377,8 @@ function onCell(i) {
   if (G.pending && G.pending.targets.includes(i)) {
     const P = G.pending;
     if (P.mode === 'move') return act({ t: 'move', from: P.from, to: i });
+    if (P.mode === 'remove') return act({ t: 'remove', at: i });
+    if (P.mode === 'call') return act({ t: 'hero', at: i, h: P.h });
     const chosen = [...(P.chosen || []), i];
     const ty = P.copy ? s.cells[P.from].as : s.cells[P.from].h;
     const need = E.stepsNeeded(ty, P.mode);
@@ -1341,6 +1390,8 @@ function onCell(i) {
     if (P.copy) a.copy = true;
     return act(a);
   }
+  if (c && c.k === 'hole') return;
+  if (G.pending && (G.pending.mode === 'remove' || G.pending.mode === 'call')) { G.pending = null; setMsg(''); return render(); }
   if (c) { if (G.sel === i) { G.sel = null; G.pending = null; } else selectUnit(i); return render(); }
   if (G.sel === null && E.placeTargets(s, G.me).includes(i)) return act({ t: 'place', at: i });
   G.sel = null; G.pending = null; render();
@@ -1351,38 +1402,46 @@ function act(a) {
   if (G.state && G.state.clock) a.spent = spentNow();
   let next;
   try { next = E.apply(G.state, a); } catch (e) { setMsg(e.message, true); return render(); }
-  if (G.mode === 'tutorial') return tutAct(a, next);
+  if (G.mode === 'tutorial' && !G.tut.free) return tutAct(a, next);
   G.sel = null; G.pending = null; setMsg('');
-  if (G.mode === 'single') { G.log.push(a); setState(next); render(); maybeAI(); }
+  if (G.mode === 'single' || G.mode === 'tutorial') { G.log.push(a); setState(next); render(); maybeAI(); }
   else { G.net.send(a, next); }
 }
 
 function maybeAI() {
   const s = G.state;
   const ai = aiSeat();
-  if (G.mode !== 'single' || s.phase !== 'play' || s.cur !== ai || G.aiBusy) return;
+  const aiOn = () => G.mode === 'single' || (G.mode === 'tutorial' && G.tut && G.tut.free);
+  if (!aiOn() || s.phase !== 'play' || s.cur !== ai || G.aiBusy) return;
   G.aiBusy = true; render();
-  setTimeout(() => {
-    const seq = chooseTurn(G.state, G.level);
+  const gen = G.gen = (G.gen || 0) + 1;
+  const live = () => gen === G.gen && G.state && aiOn();
+  const idle = () => Math.max(0, Math.max(FX.end, FX.lock || 0) - performance.now());
+  const think = () => {
+    if (!live()) { if (gen === G.gen) G.aiBusy = false; return; }
+    if (idle() > 0) return setTimeout(think, idle() + 60);
+    const lvl = G.mode === 'tutorial' ? 'novice' : G.level;
+    const seq = chooseTurn(G.state, lvl);
     const step = () => {
       const st = G.state;
-      if (G.mode !== 'single' || st.phase !== 'play' || st.cur !== ai) { G.aiBusy = false; return render(); }
+      if (!live()) return;
+      if (st.phase !== 'play' || st.cur !== ai) { G.aiBusy = false; return render(); }
       const a = seq.shift() || { t: 'end', p: ai };
       let dur = 0;
       if (G.msg && !G.err) setMsg('');
       try { const n = E.apply(st, a); G.log.push(a); dur = setState(n); }
       catch {
         // Plan passt nicht mehr (z. B. eine Mine hat zugeschlagen): neu überlegen
-        const re = chooseTurn(st, G.level);
+        const re = chooseTurn(st, lvl);
         try { const n = E.apply(st, re[0]); G.log.push(re[0]); dur = setState(n); seq.splice(0, seq.length, ...re.slice(1)); }
         catch { setState(E.apply(st, { t: 'end', p: ai })); }
       }
-      render();
-      if (G.state.phase === 'play' && G.state.cur === ai) setTimeout(step, Math.max(800, dur + 350));
+      if (G.state.phase === 'play' && G.state.cur === ai) setTimeout(step, Math.max(700, dur + 300));
       else { G.aiBusy = false; render(); }
     };
     step();
-  }, G.state.round === 1 && G.log.length === 0 ? 1500 : 600);
+  };
+  setTimeout(think, Math.max(G.state.round === 1 && G.log.length === 0 ? 1500 : 500, idle() + 250));
 }
 
 function startSingle() {
@@ -1630,13 +1689,18 @@ app.addEventListener('click', e => {
     case 'rulesIngame': G.menu = false; G.ruleBack = 'game'; G.screen = 'rules'; render(); window.scrollTo(0, 0); break;
     case 'back': G.screen = G.ruleBack; render(); break;
     case 'install': installApp(); break;
+    case 'startRemove': if (isMyTurn()) { G.sel = null; G.pending = { mode: 'remove', from: -1, targets: E.removeTargets(G.state, G.me) }; render(); } break;
+    case 'cancelRemove': G.pending = null; render(); break;
     case 'tutorial': startTutorial(); break;
     case 'tutNext': tutNext(); break;
+    case 'tutLevel': startLevel(+el.dataset.l); window.scrollTo(0, 0); break;
+    case 'tutMenu': G.gen = (G.gen || 0) + 1; G.aiBusy = false; G.mode = null; G.state = null; G.screen = 'tutmenu'; G.viewBoard = false; setMsg(''); render(); break;
+    case 'tutTip': G.tut.hideTip = true; render(); break;
     case 'tutPlay': G.tier = 1; G.goal = 'classic'; saveSettings(); G.mode = null; G.state = null; startSingle(); break;
     case 'installClose': G.installHelp = false; render(); break;
     case 'viewBoard': G.viewBoard = true; G.sel = null; render(); break;
     case 'showResult': G.viewBoard = false; render(); break;
-    case 'leave': G.viewBoard = false; closeNet(); G.mode = null; G.state = null; G.me = 0; G.screen = 'start'; G.menu = false; setMsg(''); render(); break;
+    case 'leave': G.gen = (G.gen || 0) + 1; G.aiBusy = false; G.viewBoard = false; closeNet(); G.mode = null; G.state = null; G.me = 0; G.screen = 'start'; G.menu = false; setMsg(''); render(); break;
     case 'create': startDuel(newCode(), 0); break;
     case 'multi': closeNet(); G.mode = 'multi'; G.state = null; G.me = -1; G.screen = 'mlobby'; G.code = ''; setMsg(''); render(); break;
     case 'goal': if (el.dataset.g in E.GOALS) G.goal = el.dataset.g; saveSettings(); render(); break;
@@ -1689,6 +1753,7 @@ app.addEventListener('click', e => {
     case 'confirmPick': confirmPick(); break;
     case 'cell': onCell(+el.dataset.i); break;
     case 'stack': act({ t: 'stack', at: G.sel }); break;
+    case 'heroTap': heroTap(+el.dataset.k); break;
     case 'mkhero': act({ t: 'hero', at: G.sel, h: el.dataset.h }); break;
     case 'ability': {
       const kind = el.dataset.kind, copy = el.dataset.copy === '1', s = G.state, c = s.cells[G.sel];

@@ -144,6 +144,40 @@ input.namein{width:100%;min-height:48px;border-radius:10px;border:1.5px solid va
 @keyframes tutpulse{0%,100%{opacity:.25}50%{opacity:1}}
 .tuthl{animation:tutpulse 1.4s ease-in-out infinite}
 @media (prefers-reduced-motion:reduce){.tuthl{animation:none}}
+.levelbtn{display:flex;justify-content:space-between;align-items:center;text-align:left}
+.levelbtn small{display:block;color:var(--muted);font-weight:400;font-size:13px;margin-top:2px}
+.levelbtn .ok{color:#7BE495;font-size:20px}
+.screen.game{height:calc(100dvh - env(safe-area-inset-top) - env(safe-area-inset-bottom));min-height:0;overflow:hidden;flex:none}
+.screen.game .boardwrap{flex:1 1 auto;min-height:120px;display:flex;align-items:center;justify-content:center}
+.screen.game .boardwrap svg{width:100%;height:100%;max-height:100%}
+.screen.game .bar{padding:8px 12px 2px}
+.screen.game .status{min-height:20px;line-height:20px;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.controls{display:flex;flex-direction:column;gap:6px;padding:4px 10px 10px;flex:none}
+.ctl{display:flex;gap:6px}
+.ctl>.btn{flex:1 1 0;min-width:0;min-height:46px;font-size:15px;font-family:var(--body);font-weight:600;letter-spacing:0;display:flex;align-items:center;justify-content:center;gap:6px;padding:6px 8px}
+.ctl>.ability{flex-direction:column;align-items:center;gap:0;line-height:1.2}
+.hrow{display:flex;gap:6px}
+.hbtn{flex:1 1 0;min-width:0;min-height:52px;border-radius:12px;border:1.5px solid var(--line);background:var(--surf);color:var(--text);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;padding:4px;font-family:var(--head);font-weight:700;font-size:13px}
+.hbtn span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
+.hbtn small{font-family:var(--body);font-weight:500;font-size:10px;color:var(--muted)}
+.hbtn.ready{border-color:var(--p0)}
+.hbtn.field{background:var(--surf2);border-color:var(--line2)}
+.hbtn.sel{border-color:var(--p0);box-shadow:0 0 0 1.5px var(--p0) inset}
+.hbtn:disabled{opacity:.55;cursor:default}
+.screen.game .coach{padding:7px 10px;font-size:13px;line-height:1.35}
+.screen.game .coach .cb{margin-top:5px}
+.screen.game .coach .cb .btn.small{min-height:36px;font-size:13px}
+.screen.game .coach .cb{flex-wrap:nowrap;align-items:center}
+.screen.game .coach .cb .muted{flex:1;font-size:12px}
+.cost{display:inline-flex;align-items:center;gap:3px;font-family:var(--head);font-weight:700;font-size:13px;color:var(--p0);white-space:nowrap}
+.acti{flex:none}
+.abx{display:flex;flex-direction:column;gap:2px;padding-top:6px;border-top:1px solid var(--line)}
+.abh{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:15px}
+.abd{font-size:13px;color:var(--muted);line-height:1.4}
+.ctl>.ability .cost{font-size:12px}
+.ability.on .cost{color:var(--on0)}
+.btn:disabled .cost{color:inherit}
+.controls{position:relative}
 </style>
 </head>
 <body>

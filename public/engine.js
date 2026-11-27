@@ -62,11 +62,11 @@ export const START_NODES = 15;
 export const HERO_ROUND = 3; // Aufbauphase (Runde 1–2): noch keine Helden und kein Einkreisen
 export const MAX_SAME = 2;
 export const ROUND_MIN = 10, ROUND_MAX = 50;
-export const limitOf = s => (s && s.roundLimit) || ROUND_LIMIT;
-const roundsFrom = v => { const r = Math.round(Number(v) || ROUND_LIMIT); if (r < ROUND_MIN || r > ROUND_MAX) fail('Ungültige Rundenzahl'); return r; };
-export const ROUND_LIMIT = 30; // danach entscheidet die Punktzahl   // derselbe Held höchstens zweimal
+export const limitOf = () => ROUND_LIMIT;
+const roundsFrom = () => ROUND_LIMIT;
+export const ROUND_LIMIT = 200; // nur noch Notbremse; das Spiel endet, wenn kein Punkt mehr frei ist   // derselbe Held höchstens zweimal
 export const MAX_MINES = 3, MAX_DRONES = 2, HACK_TURNS = 2;
-export const UNIT_NAME = { node: 'Node', pylon: 'Pylon', hero: 'Held', wall: 'Energiewand', drone: 'Drohne' };
+export const UNIT_NAME = { node: 'Node', pylon: 'Pylon', hero: 'Held', wall: 'Energiewand', drone: 'Drohne', hole: 'Entfernter Punkt' };
 
 // ---------- Spielfeld: Sechseck aus Punkten, innen 6 Kanten, aussen 4 ----------
 const DIRS = [[1, 0], [0, 1], [-1, 1], [-1, 0], [0, -1], [1, -1]];
@@ -122,7 +122,7 @@ export const MULTI_NODES = { 3: 15, 4: 12 };
 // ---------- Spielziele ----------
 export const GOALS = { classic: 'Klassisch', bridge: 'Brücke', beacon: 'Leuchtfeuer', core: 'Kern' };
 export const ENDPHASE = 5; // in den letzten 5 Runden kommt nichts mehr vom Stapel zurück
-export const inEndphase = s => s.round > limitOf(s) - ENDPHASE;
+export const inEndphase = () => false; // Endphase entfällt (Punkte entfernen ersetzt das Rundenlimit)
 const ptAt = (b, q, r) => {
   // Punkt (q, r) oder, falls er fehlt, der nächste Randpunkt
   const k = b.points.findIndex(p => p.q === q && p.r === r);
@@ -234,7 +234,7 @@ export const canRufNode = (s, p) => auraOf(s, p) === 'rufbereitschaft' && !(s.ru
 const heroRound = (s, p) => (auraOf(s, p) === 'rufbereitschaft' ? HERO_ROUND - 1 : HERO_ROUND);
 // Heldenplätze: picks[p] hat 3 Einträge (Doppelte erlaubt). Gibt die Typen zurück, die jetzt gerufen werden können.
 export function availableHeroes(s, p) {
-  if (!s.picks[p] || s.round < heroRound(s, p)) return [];
+  if (s.noHeroes || !s.picks[p] || s.round < heroRound(s, p)) return [];
   const out = [];
   s.picks[p].forEach((h, k) => {
     if (s.hwait[p][k] > 0) return;
@@ -265,7 +265,7 @@ let NOGUARD = false;
 const guarded = (s, i) => { if (NOGUARD) return false; return guardedRaw(s, i); };
 export const isGuarded = (s, i) => (useBoard(s), guardedRaw(s, i));
 const guardedRaw = (s, i) => { const c = s.cells[i]; return !!c && BOARD.adj[i].some(j => { const w = s.cells[j]; return w && w.k === 'hero' && w.h === 'warden' && w.p === c.p; }); };
-const enemyAt = (s, p, i) => { const c = s.cells[i]; return c && foe(s, c.p, p) ? c : null; };
+const enemyAt = (s, p, i) => { const c = s.cells[i]; return c && c.k !== 'hole' && foe(s, c.p, p) ? c : null; };
 const hittable = (s, p, i) => { const c = enemyAt(s, p, i); return !!c && c.k !== 'wall' && !c.prot && !c.hprot && !guarded(s, i); };
 
 // Ziele einer Figur. mode: 'move' | 'n' | 's'
@@ -284,7 +284,7 @@ function goalFilter(s, from, list, kind, copy, step = 0) {
   if (c.core) return [];
   const key = kind === 'n' || kind === 's' ? abType(c, copy) + ':' + kind : '';
   const into = MOVERS.has(key) || (key === 'phantom:n' && step === 1);
-  return list.filter(j => { const d = s.cells[j]; if (d && d.core) return false; if ((!d || into) && anchorOfFoe(s, c.p, j)) return false; return true; });
+  return list.filter(j => { const d = s.cells[j]; if (d && (d.core || d.k === 'hole')) return false; if ((!d || into) && anchorOfFoe(s, c.p, j)) return false; if (key === 'mimic:s' && d && anchorOfFoe(s, owner(d), from)) return false; return true; });
 }
 function targetsRaw(s, from, mode, copy = false) {
   useBoard(s);
@@ -406,7 +406,7 @@ export function abilityUsable(s, from, kind, copy = false) {
 // ---------- Zerstören, Stapel, Minen ----------
 function toStapel(s, p, n) {
   if (n <= 0) return;
-  if (auraOf(s, p) === 'recycling' && !inEndphase(s)) s.pot[p] += n;
+  if (auraOf(s, p) === 'recycling' && !inEndphase(s) && !(s.noReturn && s.noReturn.includes(p))) s.pot[p] += n;
   else s.stapel[p].push({ n, w: 1 });
 }
 function heroDown(s, c) {
@@ -462,6 +462,14 @@ function doAction(s, a) {
   const p = a.p;
   const cell = i => (Number.isInteger(i) && i >= 0 && i < V ? s.cells[i] : fail('Ungültiges Feld'));
   switch (a.t) {
+    case 'remove': {
+      if (s.removedTurn === s.turnNo) fail('Pro Zug kannst du nur einen Punkt entfernen');
+      if (!removeTargets(s, p).includes(a.at)) fail('Dieser Punkt kann nicht entfernt werden');
+      s.cells[a.at] = { p: -1, k: 'hole' }; s.removedTurn = s.turnNo;
+      s.mines = s.mines.filter(m => m.at !== a.at);
+      s.fx.push({ k: 'remove', at: a.at }); s.last = 'Punkt entfernt';
+      return 1;
+    }
     case 'place': {
       if (!placeTargets(s, p).includes(a.at)) fail(s.pot[p] <= 0 ? 'Dein Pot ist leer' : 'Hier darfst du keinen Node legen');
       if (s.cells.some(c => isFig(c) && c.p === p) && !adjacentToOwn(s, p, a.at)) s.bridge = true;
@@ -617,7 +625,8 @@ export const matesOf = (s, X) => (s && s.team ? s.team.map((t, q) => (t === s.te
 export function trappedAreas(cells, X, mates = null) {
   useBoard(cells);
   const own = mates || [X];
-  const wall = i => { const c = cells[i]; return c && own.includes(c.p) && CHAIN[c.k]; };
+  // Entfernte Punkte (Löcher) gehören nicht mehr zum Graphen: Sie wirken wie der Rand und zählen nicht mit
+  const wall = i => { const c = cells[i]; return c && (c.k === 'hole' || (own.includes(c.p) && CHAIN[c.k])); };
   const seen = new Uint8Array(V);
   const comps = [];
   for (let i = 0; i < V; i++) {
@@ -710,6 +719,31 @@ function checkGoalRules(s) {
   });
   if (s.anchors) s.cells.forEach((c, i) => { if (c && anchorOfFoe(s, owner(c), i)) fail('Dieser Punkt ist das Brückenziel eines Gegners'); });
 }
+// ---------- Punkt entfernen ----------
+// Leere Punkte, die an keine gegnerische Figur grenzen. Das Feld muss zusammenhängend bleiben,
+// Brücken-Rauten bleiben verbindbar, Leuchtfeuer und Brückenzonen sind geschützt.
+const holeAt = (s, i) => !!(s.cells[i] && s.cells[i].k === 'hole');
+function stillConnected(s, gone) {
+  const ok = i => i !== gone && !holeAt(s, i);
+  const start = s.cells.findIndex((c, i) => ok(i));
+  if (start < 0) return true;
+  const seen = new Uint8Array(V); seen[start] = 1; const q = [start]; let n = 1;
+  while (q.length) { const i = q.pop(); for (const j of BOARD.adj[i]) if (!seen[j] && ok(j)) { seen[j] = 1; n++; q.push(j); } }
+  let total = 0; for (let i = 0; i < V; i++) if (ok(i)) total++;
+  return n === total;
+}
+export function removeTargets(s, p) {
+  useBoard(s);
+  if (s.phase !== 'play' || s.noRemove || s.removedTurn === s.turnNo) return [];
+  const protectedPts = new Set([...(s.beacons || []), ...Object.keys(s.anchors || {}).flatMap(t => anchorZone(s, +t))]);
+  const out = [];
+  for (let i = 0; i < V; i++) {
+    if (s.cells[i] || protectedPts.has(i)) continue;
+    if (BOARD.adj[i].some(j => { const c = s.cells[j]; return c && c.k !== 'hole' && foe(s, owner(c), p); })) continue;
+    out.push(i);
+  }
+  return out.filter(i => stillConnected(s, i));
+}
 function startTurn(s) {
   const p = s.cur;
   // Rennen (Brücke, Leuchtfeuer): Der Startspieler hat im allerersten Zug nur 1 Aktion
@@ -722,7 +756,8 @@ function startTurn(s) {
   });
   const keep = [];
   // Endphase: Nichts kommt mehr vom Stapel zurück
-  for (const e of s.stapel[p]) { if (inEndphase(s)) keep.push(e); else if (e.w <= 0) s.pot[p] += e.n; else { e.w--; keep.push(e); } }
+  // Tutorial: Geschlagene Figuren dieses Spielers kehren nicht zurück
+  for (const e of s.stapel[p]) { if (inEndphase(s) || (s.noReturn && s.noReturn.includes(p))) keep.push(e); else if (e.w <= 0) s.pot[p] += e.n; else { e.w--; keep.push(e); } }
   s.stapel[p] = keep;
   s.hwait[p] = s.hwait[p].map(w => Math.max(0, w - 1));
 }
@@ -759,14 +794,15 @@ function endTurn(s) {
   do { nx = (nx + 1) % s.n; } while (!s.alive[nx] && nx !== p);
   if (nx <= p) s.round++;
   s.cur = nx;
-  if (s.round > limitOf(s)) {
-    // Rundenlimit: Wer mehr Punkte auf dem Feld hat, gewinnt (Node 1, Pylon 2, Held 3)
+  // Kein freier Punkt mehr (oder Notbremse nach sehr vielen Runden): Wer mehr Punkte hat, gewinnt (Node 1, Pylon 2, Held 3)
+  const full = !s.cells.some(c => !c);
+  if (full || s.round > ROUND_LIMIT) {
     const teams = liveTeams(s);
     const best = Math.max(...teams.map(t => teamScore(s, t)));
     const top = teams.filter(t => teamScore(s, t) === best);
-    s.phase = 'over'; s.endReason = 'rounds'; s.round = limitOf(s);
+    s.phase = 'over'; s.endReason = full ? 'full' : 'rounds';
     s.winner = top.length === 1 ? top[0] : null;
-    s.last = 'Rundenlimit erreicht';
+    s.last = full ? 'Das Feld ist voll' : 'Rundenlimit erreicht';
     return;
   }
   startTurn(s);
@@ -900,6 +936,7 @@ export function legalActions(s, lite = false) {
   if (s.phase !== 'play') return [];
   const p = s.cur, out = [];
   placeTargets(s, p).forEach(at => out.push({ t: 'place', p, at }));
+  if (!lite) { const r = removeTargets(s, p); const step = Math.max(1, Math.ceil(r.length / 6)); r.filter((_, k) => k % step === 0).forEach(at => out.push({ t: 'remove', p, at })); }
   const heroes = availableHeroes(s, p);
   s.cells.forEach((c, i) => {
     if (!c || c.p !== p) return;
